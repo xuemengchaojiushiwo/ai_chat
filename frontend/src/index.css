@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.conversation-tabs .ant-tabs-nav {
+  margin-bottom: 8px;
+}
+
+.conversation-tabs .ant-tabs-tab {
+  padding: 8px 16px;
+  color: #ffffff;
+}
+
+.conversation-tabs .ant-tabs-tab-active {
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+.conversation-tabs .ant-tabs-content {
+  height: calc(100vh - 200px);
+  overflow-y: auto;
+} 
