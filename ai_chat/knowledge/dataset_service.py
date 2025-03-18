@@ -2,7 +2,7 @@ import os
 from typing import List, Optional, BinaryIO, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
-from .dataset import Dataset, Document, DocumentSegment
+from ..models.document import Document as DBDocument, DocumentSegment as DBDocumentSegment
 from ..utils.file_processor import process_file
 from ..utils.text_splitter import split_text
 from ..utils.embeddings import EmbeddingFactory
@@ -16,8 +16,9 @@ import re
 import PyPDF2
 import io
 from datetime import datetime
-from ai_chat.models.document import Document as DBDocument  # SQLAlchemy 模型
-from ..models.dataset import Dataset as DBDataset    # SQLAlchemy 模型
+from ..models.dataset import Dataset as DBDataset
+from ..models.types import DocumentSegmentCreate
+from ..models.workspace import Workspace as DBWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +28,14 @@ class DatasetService:
         self.embedding_factory = EmbeddingFactory()
         self.logger = logging.getLogger(__name__)  # 添加 logger 初始化
         
-    async def get_datasets(self) -> List[Dataset]:
+    async def get_datasets(self) -> List[DBDataset]:
         """获取所有知识库列表"""
-        result = await self.db.execute(select(Dataset))
+        result = await self.db.execute(select(DBDataset))
         return result.scalars().all()
         
-    async def create_dataset(self, name: str, description: Optional[str] = None) -> Dataset:
+    async def create_dataset(self, name: str, description: Optional[str] = None) -> DBDataset:
         """创建新的知识库"""
-        dataset = Dataset(
+        dataset = DBDataset(
             name=name,
             description=description
         )
@@ -43,15 +44,15 @@ class DatasetService:
         await self.db.refresh(dataset)
         return dataset
 
-    async def get_documents(self) -> List[Document]:
+    async def get_documents(self) -> List[DBDocument]:
         """获取所有文档"""
-        result = await self.db.execute(select(Document))
+        result = await self.db.execute(select(DBDocument))
         return result.scalars().all()
 
-    async def get_document(self, document_id: int) -> Optional[Document]:
+    async def get_document(self, document_id: int) -> Optional[DBDocument]:
         """获取单个文档"""
         result = await self.db.execute(
-            select(Document).filter(Document.id == document_id)
+            select(DBDocument).filter(DBDocument.id == document_id)
         )
         return result.scalar_one_or_none()
 
@@ -140,7 +141,8 @@ class DatasetService:
                 description="测试",
                 file_type=mime_type,
                 mime_type=mime_type,
-                size=0,
+                size=len(content),
+                content=content,
                 status="pending",
                 dataset_id=dataset_id,
                 created_at=datetime.now()
@@ -178,13 +180,30 @@ class DatasetService:
                         raise
                         
                     # 创建段落记录
-                    segment = DocumentSegment(
+                    segment_data = {
+                        'dataset_id': dataset_id,
+                        'document_id': document.id,
+                        'content': segment_text,
+                        'embedding': embedding_json,
+                        'position': i,
+                        'word_count': len(segment_text.split()),
+                        'tokens': len(segment_text.split()),
+                        'status': "completed",
+                        'created_at': datetime.now()
+                    }
+                    
+                    # 使用 Pydantic 模型验证数据
+                    segment_create = DocumentSegmentCreate(
                         document_id=document.id,
                         content=segment_text,
-                        embedding=embedding_json
+                        embedding=embedding_json,
+                        created_at=datetime.now()
                     )
-                    self.db.add(segment)
-                    await self.db.commit()  # 立即提交每个segment
+                    
+                    # 创建 SQLAlchemy 模型实例
+                    db_segment = DBDocumentSegment(**segment_data)  # 使用正确的模型类
+                    self.db.add(db_segment)
+                    await self.db.commit()  # 提交事务
                     logger.info(f"Created segment {i} with {len(segment_text)} characters and embedding length {len(embedding)}")
                 except Exception as e:
                     logger.error(f"Error processing segment {i}: {str(e)}, type: {type(e)}")
@@ -218,7 +237,7 @@ class DatasetService:
         
         # 处理每个段落
         segments = []
-        current_segment = []
+        current_segment = ""
         current_length = 0
         
         for para in paragraphs:
@@ -228,19 +247,19 @@ class DatasetService:
                 
             # 如果当前段落加上已有内容不超过最大长度，则添加到当前片段
             if current_length + len(para) <= max_length:
-                current_segment.append(para)
+                current_segment += para + "\n\n"
                 current_length += len(para)
             else:
                 # 如果当前片段不为空，保存它
                 if current_segment:
-                    segments.append('\n'.join(current_segment))
+                    segments.append(current_segment.strip())
                 # 开始新的片段
-                current_segment = [para]
+                current_segment = para + "\n\n"
                 current_length = len(para)
         
         # 添加最后一个片段
         if current_segment:
-            segments.append('\n'.join(current_segment))
+            segments.append(current_segment.strip())
         
         logger.info(f"Final segments count: {len(segments)}")
         for i, segment in enumerate(segments):
@@ -302,7 +321,7 @@ class DatasetService:
 
             # 获取文档段落信息
             result = await self.db.execute(
-                select(DocumentSegment).filter(DocumentSegment.document_id == document_id)
+                select(DBDocumentSegment).filter(DBDocumentSegment.document_id == document_id)
             )
             segments = result.scalars().all()
             
@@ -334,7 +353,7 @@ class DatasetService:
         try:
             # 获取所有段落
             result = await self.db.execute(
-                select(DocumentSegment).filter(DocumentSegment.document_id == document_id)
+                select(DBDocumentSegment).filter(DBDocumentSegment.document_id == document_id)
             )
             segments = result.scalars().all()
             
@@ -370,4 +389,18 @@ class DatasetService:
                 "total_segments": 0,
                 "segments_with_embeddings": 0,
                 "segments_details": []
-            } 
+            }
+
+    async def get_dataset(self, dataset_id: int) -> DBDataset:
+        """获取数据集"""
+        result = await self.db.execute(
+            select(DBDataset).filter(DBDataset.id == dataset_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_workspace(self, workspace_id: int) -> DBWorkspace:
+        """获取工作空间"""
+        result = await self.db.execute(
+            select(DBWorkspace).filter(DBWorkspace.id == workspace_id)
+        )
+        return result.scalar_one_or_none() 

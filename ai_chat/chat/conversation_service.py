@@ -197,7 +197,7 @@ class ConversationService:
 
                 if workspace_id:
                     # 从工作空间关联的文档中检索
-                    raw_docs = await self.retriever.search(
+                    raw_docs = await self.retriever.search_with_embedding(
                         message_content, 
                         limit=self.default_retrieval_config.top_k,
                         workspace_id=workspace_id

@@ -159,6 +159,22 @@ file: [二进制文件数据]
 
 ### 3.1 对话操作
 
+#### GET /chat/conversations
+- 功能：获取所有对话列表
+- 返回示例：
+```json
+{
+  "conversations": [
+    {
+      "id": 1,
+      "name": "产品讨论",
+      "created_at": "2024-03-13T14:35:00Z",
+      "messages": []
+    }
+  ]
+}
+```
+
 #### POST /chat/conversations
 - 功能：创建新对话
 - 请求体示例：
@@ -179,8 +195,43 @@ file: [二进制文件数据]
 }
 ```
 
+#### GET /chat/conversations/{conversation_id}/messages
+- 功能：获取对话的消息历史
+- 返回示例：
+```json
+{
+  "messages": [
+    {
+      "id": 1,
+      "conversation_id": 1,
+      "role": "user",
+      "content": "请分析一下产品需求文档中的核心功能",
+      "tokens": 20,
+      "citations": [],
+      "created_at": "2024-03-13T14:36:00Z"
+    },
+    {
+      "id": 2,
+      "conversation_id": 1,
+      "role": "assistant",
+      "content": "根据文档分析，核心功能包括...",
+      "tokens": 150,
+      "citations": [
+        {
+          "text": "系统应该支持多模态输入...",
+          "document_id": 1,
+          "segment_id": 3,
+          "index": 1
+        }
+      ],
+      "created_at": "2024-03-13T14:36:30Z"
+    }
+  ]
+}
+```
+
 #### POST /chat/conversations/{conversation_id}/messages
-- 功能：发送新消息
+- 功能：发送新消息并获取AI回复
 - 请求体示例：
 ```json
 {
@@ -188,85 +239,91 @@ file: [二进制文件数据]
   "use_rag": true
 }
 ```
+- 参数说明：
+  - `message`: 用户发送的消息内容
+  - `use_rag`: 是否启用文档知识库检索（RAG）功能
 - 返回示例：
+```json
+{
+  "id": 2,
+  "conversation_id": 1,
+  "role": "assistant",
+  "content": "根据文档分析，核心功能包括...",
+  "tokens": 150,
+  "citations": [
+    {
+      "text": "系统应该支持多模态输入...",
+      "document_id": 1,
+      "segment_id": 3,
+      "index": 1
+    }
+  ],
+  "created_at": "2024-03-13T14:36:30Z"
+}
+```
+
+#### POST /chat/generate_title
+- 功能：根据对话内容生成标题
+- 请求体示例：
+```json
+{
+  "message": "对话内容..."
+}
+```
+- 返回示例：
+```json
+{
+  "title": "生成的标题"
+}
+```
+
+### 3.2 引用说明
+
+消息中的引用（citations）字段说明：
+- `text`: 引用的原文内容
+- `document_id`: 引用来源的文档ID
+- `segment_id`: 文档中的片段ID
+- `index`: 引用在当前回复中的序号
+
+## 4. 数据模型
+
+### 4.1 Message（消息）
 ```json
 {
   "id": 1,
   "conversation_id": 1,
-  "content": "根据产品需求文档分析，核心功能包括：\n1. 文档智能处理\n2. 多轮对话支持\n3. 知识库检索...",
-  "role": "assistant",
+  "role": "user|assistant",
+  "content": "消息内容",
+  "tokens": 20,
+  "citations": [
+    {
+      "text": "引用的文本内容",
+      "document_id": 1,
+      "segment_id": 1,
+      "index": 1
+    }
+  ],
   "created_at": "2024-03-13T14:36:00Z"
 }
 ```
 
-## 4. 数据模型示例
-
-### 4.1 User（用户）
+### 4.2 Citation（引用）
 ```json
 {
-  "id": 1,
-  "email": "user@example.com",
-  "name": "张三",
-  "status": "active",
-  "last_login_at": "2024-03-13T10:00:00Z",
-  "created_at": "2024-03-01T09:00:00Z",
-  "updated_at": "2024-03-13T10:00:00Z"
+  "text": "引用的文本内容",
+  "document_id": 1,
+  "segment_id": 1,
+  "index": 1
 }
 ```
 
-### 4.2 Workspace（工作空间）
-```json
-{
-  "id": 1,
-  "name": "AI项目空间",
-  "description": "用于AI项目开发和文档管理",
-  "created_at": "2024-03-01T09:30:00Z"
-}
-```
-
-### 4.3 Document（文档）
-```json
-{
-  "id": 1,
-  "name": "AI系统设计文档.pdf",
-  "content": "文档内容...",
-  "mime_type": "application/pdf",
-  "status": "processed",
-  "created_at": "2024-03-13T11:00:00Z"
-}
-```
-
-### 4.4 Conversation（对话）
-```json
-{
-  "id": 1,
-  "title": "AI系统设计讨论",
-  "workspace_id": 1,
-  "created_at": "2024-03-13T14:00:00Z",
-  "messages": [
-    {
-      "id": 1,
-      "content": "请解释一下系统架构图",
-      "role": "user",
-      "created_at": "2024-03-13T14:01:00Z"
-    },
-    {
-      "id": 2,
-      "content": "系统架构主要分为以下几层...",
-      "role": "assistant",
-      "created_at": "2024-03-13T14:01:30Z"
-    }
-  ]
-}
-```
-
-## 5. 错误响应示例
+## 5. 错误响应
 
 ### 5.1 参数错误 (400)
 ```json
 {
   "error": "Bad Request",
-  "message": "workspace_id 是必需的参数",
+  "message": "参数错误说明",
   "code": 400
 }
 ```
@@ -293,8 +350,17 @@ file: [二进制文件数据]
 ```json
 {
   "error": "Not Found",
-  "message": "找不到指定的文档",
+  "message": "找不到指定的资源",
   "code": 404
+}
+```
+
+### 5.5 服务器错误 (500)
+```json
+{
+  "error": "Internal Server Error",
+  "message": "服务器内部错误",
+  "code": 500
 }
 ```
 
@@ -305,12 +371,28 @@ file: [二进制文件数据]
 Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-2. 文件上传限制：
-   - 最大文件大小：30MB
-   - 支持的文件类型：txt, pdf, doc, docx, md
+2. RAG（检索增强生成）功能说明：
+   - 通过设置 `use_rag: true` 启用文档知识库检索
+   - 启用后，AI回复会基于相关文档内容生成答案
+   - 引用信息会在 `citations` 字段中返回
 
-3. API 基础路径：`http://localhost:8000`
+3. 分页说明：
+   - 列表接口默认返回最新的20条记录
+   - 后续版本将添加分页参数支持
 
-4. 创建对话必须指定工作空间ID，否则将返回400错误
+4. 错误处理：
+   - 所有错误响应都包含 error、message 和 code 字段
+   - 建议根据错误码进行相应的错误处理
 
-5. 所有时间戳使用 ISO 8601 格式，UTC时区 
+5. 性能优化：
+   - 建议在获取消息历史时使用分批加载
+   - 对于长对话，可以只加载最近的消息
+
+6. API版本控制：
+   - 当前版本：v1
+   - API路径默认不带版本号
+   - 后续版本将通过路径前缀区分，如 /v2/chat/conversations
+
+7. 创建对话必须指定工作空间ID，否则将返回400错误
+
+8. 所有时间戳使用 ISO 8601 格式，UTC时区 

@@ -2,14 +2,14 @@ from fastapi import FastAPI, APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
-from ai_chat.database import get_db, engine, init_db
+from ai_chat.database import get_db, engine, init_db, SessionLocal
 from ai_chat.chat.conversation_service import ConversationService
 from ai_chat.knowledge.dataset_service import DatasetService
 from sqlalchemy import select
 import logging
-from ..models.types import Dataset as DatasetSchema, Conversation as ConversationModel, Message as MessageModel
-from ..models.dataset import Dataset as DBDataset, Conversation as DBConversation  # 导入 SQLAlchemy 模型和数据库模型
-from .schemas import (
+from ai_chat.models.types import Dataset as DatasetSchema, Conversation as ConversationModel, Message as MessageModel
+from ai_chat.models.dataset import Dataset as DBDataset, Conversation as DBConversation
+from ai_chat.api.schemas import (
     Conversation, Message, ConversationCreate, 
     MessageCreate, Document
 )
@@ -44,34 +44,70 @@ async def get_dataset_service(db: AsyncSession = Depends(get_db)) -> DatasetServ
 async def startup_event():
     """应用启动时初始化"""
     try:
+        # 初始化数据库
         await init_db()
         logger.info("Database initialized successfully")
 
-        # 检查数据库连接
-        async with engine.connect() as conn:
-            await conn.execute(select(1))
-            logger.info("Database connection successful")
-
-            # 检查是否存在默认数据集
-            async with AsyncSession(engine) as session:
-                result = await session.execute(
-                    select(DBDataset).filter(DBDataset.name == "default")
+        # 使用同步会话进行初始化
+        db = SessionLocal()
+        try:
+            # 检查并创建默认工作组
+            from ai_chat.models.workspace import Workgroup
+            default_workgroup = db.query(Workgroup).filter(Workgroup.name == "default").first()
+            
+            if not default_workgroup:
+                default_workgroup = Workgroup(
+                    name="default",
+                    description="Default workgroup",
+                    created_at=datetime.utcnow()
                 )
-                default_dataset = result.scalar_one_or_none()
-                
-                if not default_dataset:
-                    # 创建默认数据集
-                    default_dataset = DBDataset(
-                        name="default", 
-                        description="Default dataset"
-                    )
-                    session.add(default_dataset)
-                    await session.commit()
-                    logger.info("Created default dataset")
-                else:
-                    logger.info("Default dataset exists")
+                db.add(default_workgroup)
+                db.commit()
+                logger.info("Created default workgroup")
+            else:
+                logger.info("Default workgroup exists")
 
-        logger.info("Application startup complete")
+            # 检查并创建默认工作空间
+            from ai_chat.models.workspace import Workspace
+            default_workspace = db.query(Workspace).filter(Workspace.name == "default").first()
+            
+            if not default_workspace:
+                default_workspace = Workspace(
+                    name="default",
+                    description="Default workspace",
+                    group_id=default_workgroup.id,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                db.add(default_workspace)
+                db.commit()
+                logger.info("Created default workspace")
+            else:
+                logger.info("Default workspace exists")
+
+            # 检查并创建默认数据集
+            default_dataset = db.query(DBDataset).filter(DBDataset.name == "default").first()
+            
+            if not default_dataset:
+                default_dataset = DBDataset(
+                    name="default",
+                    description="Default dataset",
+                    created_at=datetime.utcnow()
+                )
+                db.add(default_dataset)
+                db.commit()
+                logger.info("Created default dataset")
+            else:
+                logger.info("Default dataset exists")
+
+            logger.info("Application startup complete")
+            
+        except Exception as e:
+            logger.error(f"Error during startup: {e}")
+            db.rollback()
+            raise
+        finally:
+            db.close()
             
     except Exception as e:
         logger.error(f"Error initializing database: {e}")
@@ -176,100 +212,100 @@ async def send_message(
         logger.error(f"Error sending message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/documents", response_model=List[Document])
-async def list_documents(db: AsyncSession = Depends(get_db)):
-    """获取文档列表"""
-    try:
-        service = DatasetService(db)
-        documents = await service.get_documents()
-        return [
-            Document(
-                id=doc.id,
-                dataset_id=doc.dataset_id or 1,  # 使用默认数据集ID
-                name=doc.name,
-                content=doc.content,
-                mime_type=doc.mime_type,
-                status=doc.status,
-                error=doc.error,
-                created_at=doc.created_at.isoformat() if doc.created_at else None
-            )
-            for doc in documents
-        ]
-    except Exception as e:
-        logger.error(f"Error listing documents: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.get("/documents", response_model=List[Document])
+# async def list_documents(db: AsyncSession = Depends(get_db)):
+#     """获取文档列表"""
+#     try:
+#         service = DatasetService(db)
+#         documents = await service.get_documents()
+#         return [
+#             Document(
+#                 id=doc.id,
+#                 dataset_id=doc.dataset_id or 1,  # 使用默认数据集ID
+#                 name=doc.name,
+#                 content=doc.content,
+#                 mime_type=doc.mime_type,
+#                 status=doc.status,
+#                 error=doc.error,
+#                 created_at=doc.created_at.isoformat() if doc.created_at else None
+#             )
+#             for doc in documents
+#         ]
+#     except Exception as e:
+#         logger.error(f"Error listing documents: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/documents", response_model=Document)
-async def upload_document(
-    file: UploadFile,
-    db: AsyncSession = Depends(get_db),
-    dataset_service: DatasetService = Depends(get_dataset_service)
-):
-    """上传文档"""
-    try:
-        # 获取文件类型
-        mime_type = dataset_service._get_mime_type(file.filename)
+# @router.post("/documents", response_model=Document)
+# async def upload_document(
+#     file: UploadFile,
+#     db: AsyncSession = Depends(get_db),
+#     dataset_service: DatasetService = Depends(get_dataset_service)
+# ):
+#     """上传文档"""
+#     try:
+#         # 获取文件类型
+#         mime_type = dataset_service._get_mime_type(file.filename)
         
-        # 处理文档
-        document = await dataset_service.process_document(
-            file=file.file,
-            filename=file.filename,
-            mime_type=mime_type
-        )
+#         # 处理文档
+#         document = await dataset_service.process_document(
+#             file=file.file,
+#             filename=file.filename,
+#             mime_type=mime_type
+#         )
         
-        return Document(
-            id=document.id,
-            dataset_id=document.dataset_id or 1,
-            name=document.name,
-            content=document.content,
-            mime_type=document.mime_type,
-            status=document.status,
-            error=document.error,
-            created_at=document.created_at.isoformat() if document.created_at else None
-        )
-    except Exception as e:
-        logger.error(f"Error uploading document: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+#         return Document(
+#             id=document.id,
+#             dataset_id=document.dataset_id or 1,
+#             name=document.name,
+#             content=document.content,
+#             mime_type=document.mime_type,
+#             status=document.status,
+#             error=document.error,
+#             created_at=document.created_at.isoformat() if document.created_at else None
+#         )
+#     except Exception as e:
+#         logger.error(f"Error uploading document: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/documents/{document_id}")
-async def delete_document(document_id: int, db: AsyncSession = Depends(get_db)):
-    """删除文档"""
-    try:
-        service = DatasetService(db)
-        success = await service.delete_document(document_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Document not found")
-        return {"status": "success"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting document: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.delete("/documents/{document_id}")
+# async def delete_document(document_id: int, db: AsyncSession = Depends(get_db)):
+#     """删除文档"""
+#     try:
+#         service = DatasetService(db)
+#         success = await service.delete_document(document_id)
+#         if not success:
+#             raise HTTPException(status_code=404, detail="Document not found")
+#         return {"status": "success"}
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         logger.error(f"Error deleting document: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/documents/{document_id}/status")
-async def get_document_status(document_id: int, db: AsyncSession = Depends(get_db)):
-    """获取文档处理状态"""
-    try:
-        service = DatasetService(db)
-        status = await service.get_document_status(document_id)
-        # 确保 created_at 是字符串格式
-        if status.get('created_at') and isinstance(status['created_at'], datetime):
-            status['created_at'] = status['created_at'].isoformat()
-        return status
-    except Exception as e:
-        logger.error(f"Error getting document status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.get("/documents/{document_id}/status")
+# async def get_document_status(document_id: int, db: AsyncSession = Depends(get_db)):
+#     """获取文档处理状态"""
+#     try:
+#         service = DatasetService(db)
+#         status = await service.get_document_status(document_id)
+#         # 确保 created_at 是字符串格式
+#         if status.get('created_at') and isinstance(status['created_at'], datetime):
+#             status['created_at'] = status['created_at'].isoformat()
+#         return status
+#     except Exception as e:
+#         logger.error(f"Error getting document status: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/documents/{document_id}/embeddings")
-async def check_document_embeddings(document_id: int, db: AsyncSession = Depends(get_db)):
-    """检查文档的向量生成情况"""
-    try:
-        service = DatasetService(db)
-        status = await service.check_embeddings(document_id)
-        return status
-    except Exception as e:
-        logger.error(f"Error checking embeddings: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# @router.get("/documents/{document_id}/embeddings")
+# async def check_document_embeddings(document_id: int, db: AsyncSession = Depends(get_db)):
+#     """检查文档的向量生成情况"""
+#     try:
+#         service = DatasetService(db)
+#         status = await service.check_embeddings(document_id)
+#         return status
+#     except Exception as e:
+#         logger.error(f"Error checking embeddings: {str(e)}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 class GenerateTitleRequest(BaseModel):
     message: str

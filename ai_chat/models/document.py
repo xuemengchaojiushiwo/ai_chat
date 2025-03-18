@@ -48,7 +48,12 @@ class DocumentSegment(Base):
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"))
     content = Column(Text, nullable=False)
     embedding = Column(Text)
+    position = Column(Integer)
+    word_count = Column(Integer)
+    tokens = Column(Integer)
+    status = Column(String(50), default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
 
     # 关系
     document = relationship(

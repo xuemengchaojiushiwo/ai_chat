@@ -6,7 +6,6 @@ import numpy as np
 import logging
 import json
 from sklearn.metrics.pairwise import cosine_similarity
-from sqlalchemy.orm import Session
 
 # SQLAlchemy models - 只保留一个 DocumentSegment 导入
 from ..models.document import Document, DocumentSegment, DocumentWorkspace
@@ -20,7 +19,7 @@ from ..models.types import (
 logger = logging.getLogger(__name__)
 
 class Retriever:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.embedding_factory = EmbeddingFactory()
         self.logger = logging.getLogger(__name__)
@@ -87,7 +86,7 @@ class Retriever:
         segment = result.scalar_one_or_none()
         return DocumentSegmentResponse.from_orm(segment) if segment else None
 
-    async def search_with_embedding(self, query: str, limit: int = 3) -> List[Dict]:
+    async def search_with_embedding(self, query: str, limit: int = 3, workspace_id: Optional[int] = None) -> List[Dict]:
         """搜索相关文档段落"""
         try:
             # 1. 获取查询的向量表示
@@ -100,6 +99,14 @@ class Retriever:
 
             # 2. 获取所有文档片段
             stmt = select(DocumentSegment).join(Document)
+            if workspace_id:
+                # 添加工作空间过滤条件
+                self.logger.info(f"Searching in workspace: {workspace_id}")
+                stmt = (
+                    stmt
+                    .join(DocumentWorkspace)
+                    .filter(DocumentWorkspace.workspace_id == workspace_id)
+                )
             result = await self.db.execute(stmt)
             segments = result.scalars().all()
             self.logger.info(f"Found {len(segments)} total segments")
@@ -130,7 +137,10 @@ class Retriever:
                     )[0][0]
 
                     # 获取文档信息
-                    document = await self.db.get(Document, segment.document_id)
+                    document_result = await self.db.execute(
+                        select(Document).filter(Document.id == segment.document_id)
+                    )
+                    document = document_result.scalar_one_or_none()
                     if not document:
                         self.logger.warning(f"Document not found for segment {segment.id}")
                         continue

@@ -71,6 +71,16 @@ class Document(BaseModel):
     class Config:
         from_attributes = True
 
+class DocumentSegmentCreate(BaseModel):
+    id: Optional[int] = None
+    document_id: int
+    content: str
+    embedding: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 class DocumentSegment(BaseModel):
     id: int
     document_id: int
