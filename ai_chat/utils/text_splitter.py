@@ -1,6 +1,5 @@
 from typing import List, Optional
 import re
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 class TextSplitter:
     def __init__(
@@ -9,14 +8,9 @@ class TextSplitter:
         chunk_overlap: int = 50,
         separators: Optional[List[str]] = None
     ):
-        if separators is None:
-            separators = ["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
-            
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=separators
-        )
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.separators = separators or ["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
         
     def split_text(self, text: str) -> List[str]:
         """
@@ -24,9 +18,7 @@ class TextSplitter:
         """
         # 预处理文本
         text = self._preprocess_text(text)
-        
-        # 使用 langchain 的分割器进行分割
-        return self.text_splitter.split_text(text)
+        return split_text(text, self.chunk_size, self.chunk_overlap)
         
     def _preprocess_text(self, text: str) -> str:
         """
@@ -41,7 +33,7 @@ class TextSplitter:
 # 创建默认分割器实例
 default_splitter = TextSplitter()
 
-def split_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
+def split_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
     """
     将文本分割成小段
     
