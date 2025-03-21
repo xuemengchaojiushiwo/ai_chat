@@ -3,6 +3,8 @@ from ..config import settings
 import logging
 import json
 from typing import List, Tuple, Optional
+import asyncio
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,35 @@ class LLM:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"  # 恢复原来的格式
         }
+        self.timeout = 120.0  # 增加超时时间到120秒
+        self.max_retries = 3  # 最大重试次数
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    async def _make_request(self, client: httpx.AsyncClient, **kwargs) -> dict:
+        """发送请求到 LLM API 并处理响应"""
+        try:
+            response = await client.post(
+                self.api_base,
+                headers=self.headers,
+                timeout=self.timeout,
+                **kwargs
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if "error" in result:
+                raise Exception(f"API error: {result['error']}")
+                
+            return result
+        except httpx.TimeoutException as e:
+            logger.error(f"Request timeout: {str(e)}")
+            raise
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
+            raise
 
     async def chat(self, system: str, history: List[Tuple[str, str]], message: str) -> str:
         """
@@ -38,28 +69,47 @@ class LLM:
             logger.info(f"Using model: {self.model}")
             
             async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    self.api_base,
-                    headers=self.headers,
+                result = await self._make_request(
+                    client,
                     json={
                         "model": self.model,
                         "messages": messages,
                         "temperature": 0.7,
                         "max_tokens": 2000,
                         "stream": False
-                    },
-                    timeout=30.0
+                    }
                 )
-                
-                if response.status_code != 200:
-                    logger.error(f"API error: {response.status_code} - {response.text}")
-                    raise Exception(f"API error: {response.status_code}")
-
-                result = response.json()
                 return result["choices"][0]["message"]["content"]
 
         except Exception as e:
             logger.error(f"Chat error: {str(e)}")
+            raise
+
+    async def chat_completion(self, messages: List[dict]) -> dict:
+        """
+        调用 Silicon Flow LLM 进行对话补全
+        :param messages: 消息列表，每个消息包含 role 和 content
+        :return: LLM 回复
+        """
+        try:
+            logger.info(f"Sending request to {self.api_base}")
+            logger.info(f"Using model: {self.model}")
+            
+            async with httpx.AsyncClient() as client:
+                result = await self._make_request(
+                    client,
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": 0.7,
+                        "max_tokens": 2000,
+                        "stream": False
+                    }
+                )
+                return result["choices"][0]["message"]
+                
+        except Exception as e:
+            logger.error(f"Error in chat completion: {str(e)}")
             raise
 
 class LLMFactory:
@@ -69,4 +119,8 @@ class LLMFactory:
         创建 LLM 实例
         :return: LLM 实例
         """
-        return LLM() 
+        return LLM()
+
+def get_llm_service() -> LLM:
+    """获取 LLM 服务实例"""
+    return LLMFactory.create_llm() 

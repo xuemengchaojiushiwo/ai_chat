@@ -12,7 +12,7 @@ SF_EMBEDDING_URL = f"{SF_API_BASE}/embeddings"
 SF_CHAT_URL = f"{SF_API_BASE}/chat/completions"
 
 # 模型配置
-CHAT_MODEL = "Qwen/QwQ-32B-Preview"
+CHAT_MODEL = "Qwen/QwQ-32B"
 EMBEDDING_MODEL = "BAAI/bge-m3"
 
 # 向量搜索配置

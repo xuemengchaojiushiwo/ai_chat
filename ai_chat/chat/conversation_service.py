@@ -253,4 +253,27 @@ class ConversationService:
 
         except Exception as e:
             logger.error(f"Error in send_message: {str(e)}")
+            raise
+
+    async def delete_conversation(self, conversation_id: int) -> bool:
+        """删除对话及其所有消息"""
+        try:
+            # 首先检查对话是否存在
+            result = await self.db.execute(
+                select(DBConversation).filter(DBConversation.id == conversation_id)
+            )
+            conversation = result.scalar_one_or_none()
+            
+            if not conversation:
+                return False
+                
+            # 删除对话及其关联的消息（依赖于数据库的级联删除）
+            await self.db.delete(conversation)
+            await self.db.commit()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting conversation: {str(e)}")
+            await self.db.rollback()
             raise 

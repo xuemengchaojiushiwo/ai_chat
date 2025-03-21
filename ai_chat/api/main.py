@@ -17,6 +17,7 @@ from datetime import datetime
 from pydantic import BaseModel
 from ai_chat.api.workspace import router as workspace_router
 from ai_chat.api.document import router as document_router
+from .routes.templates import router as template_router
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -25,12 +26,12 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="AI Chat API")
 
 # 创建路由器
-router = APIRouter(prefix="/chat")
+router = APIRouter()
 
 # 配置 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # 允许的前端地址
+    allow_origins=["*"],  # 允许所有来源
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -118,11 +119,12 @@ async def shutdown_event():
     """应用关闭时清理"""
     logger.info("Application shutting down")
 
-@router.get("/")
+@app.get("/")
 async def root():
-    return {"message": "AI Chat API"}
+    """API 根路由"""
+    return {"status": "ok", "message": "AI Chat API is running"}
 
-@router.get("/conversations", response_model=List[Conversation])
+@router.get("/conversations/list", response_model=List[Conversation])
 async def list_conversations(db: AsyncSession = Depends(get_db)):
     """获取所有对话列表"""
     try:
@@ -131,7 +133,7 @@ async def list_conversations(db: AsyncSession = Depends(get_db)):
         return [
             {
                 "id": conv.id,
-                "name": conv.title,  # 从 title 映射到 name
+                "name": conv.title,
                 "created_at": conv.created_at.isoformat() if conv.created_at else None,
                 "messages": []
             }
@@ -141,25 +143,18 @@ async def list_conversations(db: AsyncSession = Depends(get_db)):
         logger.error(f"Error listing conversations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/conversations", response_model=Conversation)
-async def create_conversation(data: ConversationCreate, db: AsyncSession = Depends(get_db)):
+@router.post("/conversations/create", response_model=Conversation)
+async def create_conversation(
+    data: ConversationCreate,
+    db: AsyncSession = Depends(get_db)
+):
     """创建新对话"""
     try:
         service = ConversationService(db)
-        name = str(data.name) if data.name else "新对话"
-        
-        # 确保记录工作空间ID
-        logger.info(f"Creating conversation with workspace_id: {data.workspace_id}")
-        
-        conversation = await service.create_conversation(
-            name=name,
-            workspace_id=data.workspace_id
-        )
-        
+        conversation = await service.create_conversation(data.name)
         return {
             "id": conversation.id,
             "name": conversation.title,
-            "workspace_id": conversation.workspace_id,
             "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
             "messages": []
         }
@@ -167,12 +162,38 @@ async def create_conversation(data: ConversationCreate, db: AsyncSession = Depen
         logger.error(f"Error creating conversation: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/conversations/{conversation_id}/messages", response_model=List[Message])
-async def get_conversation_messages(conversation_id: int, db: AsyncSession = Depends(get_db)):
-    """获取对话消息历史"""
+@router.post("/conversations/send-message", response_model=Message)
+async def send_message(
+    conversation_id: int,
+    data: MessageCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """发送消息并获取回复"""
     try:
-        conversation_service = ConversationService(db)
-        messages = await conversation_service.get_messages(conversation_id)
+        service = ConversationService(db)
+        message = await service.send_message(conversation_id, data.message, data.use_rag)
+        
+        return {
+            "id": message.id,
+            "conversation_id": message.conversation_id,
+            "role": message.role,
+            "content": message.content,
+            "citations": message.citations if hasattr(message, 'citations') else [],
+            "created_at": message.created_at.isoformat() if message.created_at else None
+        }
+    except Exception as e:
+        logger.error(f"Error sending message: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/conversations/messages/{conversation_id}", response_model=List[Message])
+async def get_conversation_messages(
+    conversation_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """获取对话的所有消息"""
+    try:
+        service = ConversationService(db)
+        messages = await service.get_messages(conversation_id)
         return [
             {
                 "id": msg.id,
@@ -188,28 +209,20 @@ async def get_conversation_messages(conversation_id: int, db: AsyncSession = Dep
         logger.error(f"Error getting messages: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/conversations/{conversation_id}/messages", response_model=Message)
-async def send_message(
+@router.post("/conversations/delete")
+async def delete_conversation(
     conversation_id: int,
-    data: MessageCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """发送消息并获取回复"""
+    """删除对话"""
     try:
         service = ConversationService(db)
-        message = await service.send_message(conversation_id, data.message, data.use_rag)
-        
-        # 手动构建响应对象，而不是调用 to_dict()
-        return {
-            "id": message.id,
-            "conversation_id": message.conversation_id,
-            "role": message.role,
-            "content": message.content,
-            "citations": message.citations if hasattr(message, 'citations') else [],
-            "created_at": message.created_at.isoformat() if message.created_at else None
-        }
+        success = await service.delete_conversation(conversation_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {"status": "success"}
     except Exception as e:
-        logger.error(f"Error sending message: {str(e)}")
+        logger.error(f"Error deleting conversation: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # @router.get("/documents", response_model=List[Document])
@@ -337,8 +350,7 @@ async def generate_title(request: GenerateTitleRequest, db: AsyncSession = Depen
         raise HTTPException(status_code=500, detail=f"Failed to generate title: {str(e)}")
 
 # 注册路由
-app.include_router(workspace_router, prefix="/api")
-app.include_router(document_router, prefix="/api")
-
-# 将路由器包含到应用中
-app.include_router(router) 
+app.include_router(workspace_router, prefix="/api/v1", tags=["工作空间管理"])
+app.include_router(document_router, prefix="/api/v1", tags=["文档管理"])
+app.include_router(router, prefix="/api/v1/chat", tags=["对话管理"])
+app.include_router(template_router) 
