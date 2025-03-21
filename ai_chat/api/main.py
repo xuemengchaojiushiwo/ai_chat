@@ -134,6 +134,7 @@ async def list_conversations(db: AsyncSession = Depends(get_db)):
             {
                 "id": conv.id,
                 "name": conv.title,
+                "workspace_id": conv.workspace_id,
                 "created_at": conv.created_at.isoformat() if conv.created_at else None,
                 "messages": []
             }
@@ -151,10 +152,11 @@ async def create_conversation(
     """创建新对话"""
     try:
         service = ConversationService(db)
-        conversation = await service.create_conversation(data.name)
+        conversation = await service.create_conversation(data.name, data.workspace_id)
         return {
             "id": conversation.id,
             "name": conversation.title,
+            "workspace_id": conversation.workspace_id,
             "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
             "messages": []
         }

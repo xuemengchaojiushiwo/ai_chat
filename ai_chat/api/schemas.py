@@ -56,6 +56,7 @@ class ConversationCreate(BaseModel):
 class Conversation(BaseModel):
     id: int
     name: str
+    workspace_id: Optional[int] = None
     created_at: Optional[str] = None
     messages: List[Message] = []
 
