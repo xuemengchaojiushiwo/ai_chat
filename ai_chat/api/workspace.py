@@ -45,6 +45,8 @@ class WorkspaceResponse(WorkspaceBase):
 
 # 添加新的请求模型
 class WorkspaceAssociationRequest(BaseModel):
+    """工作空间关联请求模型"""
+    document_ids: List[int]  # 修改为文档ID列表
     workspace_ids: List[int]
 
 class WorkgroupUpdateRequest(WorkgroupCreate):
@@ -214,18 +216,23 @@ async def search(q: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/documents/link-workspaces")
 async def link_document_workspace(
-    document_id: int,
     request: WorkspaceAssociationRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """关联文档到多个工作空间"""
+    """关联多个文档到多个工作空间"""
     try:
-        document = await db.execute(
-            select(Document).filter(Document.id == document_id)
-        )
-        if not document.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Document not found")
+        # 验证所有文档是否存在
+        for document_id in request.document_ids:
+            document = await db.execute(
+                select(Document).filter(Document.id == document_id)
+            )
+            if not document.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Document {document_id} not found"
+                )
 
+        # 验证所有工作空间是否存在
         for workspace_id in request.workspace_ids:
             workspace = await db.execute(
                 select(DBWorkspace).filter(DBWorkspace.id == workspace_id)
@@ -236,21 +243,27 @@ async def link_document_workspace(
                     detail=f"Workspace {workspace_id} not found"
                 )
 
+        # 删除旧的关联关系
         await db.execute(
             delete(DocumentWorkspace).where(
-                DocumentWorkspace.document_id == document_id
+                DocumentWorkspace.document_id.in_(request.document_ids)
             )
         )
 
-        for workspace_id in request.workspace_ids:
-            db_doc_workspace = DocumentWorkspace(
-                document_id=document_id,
-                workspace_id=workspace_id
-            )
-            db.add(db_doc_workspace)
+        # 创建新的关联关系
+        for document_id in request.document_ids:
+            for workspace_id in request.workspace_ids:
+                db_doc_workspace = DocumentWorkspace(
+                    document_id=document_id,
+                    workspace_id=workspace_id
+                )
+                db.add(db_doc_workspace)
 
         await db.commit()
-        return {"status": "success"}
+        return {
+            "status": "success",
+            "message": f"Successfully linked {len(request.document_ids)} documents to {len(request.workspace_ids)} workspaces"
+        }
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e)) 

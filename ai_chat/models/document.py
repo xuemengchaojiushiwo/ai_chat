@@ -13,8 +13,12 @@ class Document(Base):
     description = Column(Text, nullable=True)
     file_type = Column(String(100), nullable=True)
     mime_type = Column(String(255))
-    size = Column(Integer, nullable=True)
+    size = Column(Integer, nullable=False, default=0)
     content = Column(Text)
+    file_path = Column(String(255))  # 存储文件路径
+    file_hash = Column(String(64))   # 文件 SHA256 哈希值
+    version = Column(Integer, default=1)  # 文件版本号
+    original_name = Column(String(255))  # 原始文件名
     status = Column(String(50), default="pending")
     error = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)

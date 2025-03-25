@@ -68,9 +68,12 @@ class Document(BaseModel):
     id: int
     dataset_id: int
     name: str
-    content: str
+    content: Optional[str] = None
     mime_type: str
     status: str
+    size: str
+    version: int
+    file_hash: str
     error: Optional[str] = None
     created_at: Optional[str] = None
 

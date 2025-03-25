@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, or_, func
+from sqlalchemy import select, delete, or_, func, and_
 from typing import List, Optional
 from ..database import get_db
 from pydantic import BaseModel
@@ -9,11 +10,12 @@ import os
 import mimetypes
 from pathlib import Path
 from ..models.document import Document as DBDocument, DocumentWorkspace, DocumentSegment
-from ..models.workspace import Workspace
+from ..models.workspace import Workspace as DBWorkspace
 from ..knowledge.dataset_service import DatasetService
 from ..models.dataset import Dataset as DBDataset
 import logging
 from ..models.types import Document as DocumentSchema
+import io
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -67,22 +69,86 @@ class DocumentResponse(DocumentBase):
     class Config:
         from_attributes = True
 
+def format_size(size_in_bytes: int) -> str:
+    """将字节大小转换为人类可读的格式（KB或MB）"""
+    if size_in_bytes < 1024 * 1024:  # 小于1MB
+        return f"{size_in_bytes / 1024:.1f}KB"
+    else:
+        return f"{size_in_bytes / (1024 * 1024):.1f}MB"
+
 @router.get("/documents/list", response_model=List[DocumentSchema])
-async def list_documents(db: AsyncSession = Depends(get_db)):
+async def list_documents(
+    db: AsyncSession = Depends(get_db),
+    show_all_versions: bool = Query(False, description="是否显示所有版本")
+):
     """获取文档列表"""
     try:
         service = DatasetService(db)
-        documents = await service.get_documents()
+        
+        # 构建查询
+        query = select(DBDocument)
+        
+        # 如果不显示所有版本，只显示每个文件的最新版本
+        if not show_all_versions:
+            subquery = (
+                select(
+                    DBDocument.file_hash,
+                    DBDocument.original_name,
+                    func.max(DBDocument.version).label('max_version')
+                )
+                .group_by(DBDocument.file_hash, DBDocument.original_name)
+                .subquery()
+            )
+            
+            query = (
+                select(DBDocument)
+                .join(
+                    subquery,
+                    and_(
+                        DBDocument.file_hash == subquery.c.file_hash,
+                        DBDocument.original_name == subquery.c.original_name,
+                        DBDocument.version == subquery.c.max_version
+                    )
+                )
+            )
+        
+        # 执行查询
+        result = await db.execute(query)
+        documents = result.scalars().all()
+        
+        # 获取每个文档关联的工作空间
+        document_workspaces = {}
+        for doc in documents:
+            # 查询文档关联的工作空间
+            workspace_result = await db.execute(
+                select(DBWorkspace)
+                .join(DocumentWorkspace, DocumentWorkspace.workspace_id == DBWorkspace.id)
+                .filter(DocumentWorkspace.document_id == doc.id)
+            )
+            workspaces = workspace_result.scalars().all()
+            document_workspaces[doc.id] = [
+                {
+                    "id": ws.id,
+                    "name": ws.name,
+                    "description": ws.description
+                }
+                for ws in workspaces
+            ]
+        
         return [
             DocumentSchema(
                 id=doc.id,
                 dataset_id=doc.dataset_id or 1,
-                name=doc.name,
+                name=doc.original_name,  # 使用原始文件名
                 content=doc.content,
                 mime_type=doc.mime_type,
                 status=doc.status,
+                size=format_size(doc.size) if doc.size else "0KB",
+                version=doc.version,  # 添加版本信息
+                file_hash=doc.file_hash[:8],  # 添加文件哈希前8位
                 error=doc.error,
-                created_at=doc.created_at.isoformat() if doc.created_at else None
+                created_at=doc.created_at.isoformat() if doc.created_at else None,
+                workspaces=document_workspaces.get(doc.id, [])  # 添加关联的工作空间列表
             )
             for doc in documents
         ]
@@ -120,10 +186,13 @@ async def upload_document(
         return DocumentSchema(
             id=document.id,
             dataset_id=document.dataset_id,
-            name=document.name,
+            name=document.original_name,  # 使用原始文件名
             content=document.content if hasattr(document, 'content') else None,
             mime_type=document.mime_type,
             status=document.status,
+            size=format_size(document.size) if document.size else "0KB",
+            version=document.version,  # 添加版本号
+            file_hash=document.file_hash[:8] if document.file_hash else None,  # 添加文件哈希
             error=document.error if hasattr(document, 'error') else None,
             created_at=document.created_at.isoformat() if document.created_at else None
         )
@@ -172,4 +241,44 @@ async def check_document_embeddings(document_id: int, db: AsyncSession = Depends
         return status
     except Exception as e:
         logger.error(f"Error checking embeddings: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/documents/download/{document_id}")
+async def download_document(
+    document_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """下载文档"""
+    try:
+        # 获取文档信息
+        result = await db.execute(
+            select(DBDocument).filter(DBDocument.id == document_id)
+        )
+        document = result.scalar_one_or_none()
+        
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # 检查文件是否存在
+        if not document.file_path or not os.path.exists(document.file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # 打开文件流
+        file_stream = open(document.file_path, "rb")
+        
+        # 设置响应头
+        headers = {
+            'Content-Disposition': f'attachment; filename="{document.name}"'
+        }
+        
+        # 返回文件流
+        return StreamingResponse(
+            file_stream,
+            media_type=document.mime_type,
+            headers=headers,
+            background=lambda: file_stream.close()  # 确保文件流在响应完成后关闭
+        )
+        
+    except Exception as e:
+        logger.error(f"Error downloading document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

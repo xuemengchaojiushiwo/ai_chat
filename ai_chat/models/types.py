@@ -59,14 +59,25 @@ class Dataset(BaseModel):
     class Config:
         from_attributes = True
 
-class Document(BaseModel):
+class WorkspaceInfo(BaseModel):
+    """工作空间信息"""
     id: int
     name: str
+    description: Optional[str] = None
+
+class Document(BaseModel):
+    id: int
+    dataset_id: int
+    name: str
     content: Optional[str] = None
-    mime_type: Optional[str] = None
+    mime_type: str
     status: str
+    size: str
+    version: int
+    file_hash: str
     error: Optional[str] = None
-    created_at: Optional[datetime] = None
+    created_at: Optional[str] = None
+    workspaces: List[WorkspaceInfo] = []  # 添加工作空间列表字段
 
     class Config:
         from_attributes = True

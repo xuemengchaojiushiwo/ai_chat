@@ -1,7 +1,7 @@
 import os
 from typing import List, Optional, BinaryIO, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from ..models.document import Document as DBDocument, DocumentSegment as DBDocumentSegment
 from ..utils.file_processor import process_file
 from ..utils.text_splitter import split_text
@@ -19,6 +19,8 @@ from datetime import datetime
 from ..models.dataset import Dataset as DBDataset
 from ..models.types import DocumentSegmentCreate
 from ..models.workspace import Workspace as DBWorkspace
+import hashlib
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,40 @@ class DatasetService:
             return float(obj)
         return obj
 
+    async def _calculate_file_hash(self, file: BinaryIO) -> str:
+        """计算文件的 SHA256 哈希值"""
+        sha256_hash = hashlib.sha256()
+        # 保存当前文件指针位置
+        current_position = file.tell()
+        # 重置文件指针到开头
+        file.seek(0)
+        
+        # 分块读取文件并更新哈希值
+        for byte_block in iter(lambda: file.read(4096), b""):
+            sha256_hash.update(byte_block)
+            
+        # 恢复文件指针位置
+        file.seek(current_position)
+        return sha256_hash.hexdigest()
+
+    async def _get_next_version(self, file_hash: str, original_name: str) -> int:
+        """获取文件的下一个版本号"""
+        # 使用子查询获取最大版本号
+        result = await self.db.execute(
+            select(func.max(DBDocument.version))
+            .filter(
+                DBDocument.file_hash == file_hash,
+                DBDocument.original_name == original_name
+            )
+        )
+        max_version = result.scalar() or 0
+        return max_version + 1
+
+    async def _get_unique_filename(self, original_name: str, file_hash: str, version: int) -> str:
+        """生成唯一的文件名"""
+        name, ext = os.path.splitext(original_name)
+        return f"{name}_v{version}_{file_hash[:8]}{ext}"
+
     async def process_document(
         self,
         file: Any,
@@ -118,6 +154,31 @@ class DatasetService:
                 await self.db.commit()
                 logger.info("Created default dataset")
 
+            # 获取文件大小
+            file.seek(0, 2)  # 移动到文件末尾
+            file_size = file.tell()  # 获取文件大小
+            file.seek(0)  # 重置文件指针到开头
+            logger.info(f"File size: {file_size} bytes")
+
+            # 计算文件哈希值
+            file_hash = await self._calculate_file_hash(file)
+            logger.info(f"File hash: {file_hash}")
+
+            # 获取下一个版本号
+            version = await self._get_next_version(file_hash, filename)
+            logger.info(f"Next version: {version}")
+            
+            # 生成唯一的文件名
+            unique_filename = await self._get_unique_filename(filename, file_hash, version)
+            file_path = os.path.join("uploads", unique_filename)
+
+            # 保存文件到文件系统
+            with open(file_path, "wb") as f:
+                f.write(file.read())
+            logger.info(f"Saved new file to: {file_path}")
+            
+            file.seek(0)  # 重置文件指针
+
             # 根据文件类型提取文本
             if mime_type == 'application/pdf':
                 logger.info("Processing PDF file")
@@ -137,12 +198,14 @@ class DatasetService:
 
             # 创建文档记录
             document = DBDocument(
-                name=filename,
-                description="测试",
-                file_type=mime_type,
+                name=unique_filename,
+                original_name=filename,
                 mime_type=mime_type,
-                size=len(content),
+                size=file_size,
                 content=content,
+                file_path=file_path,
+                file_hash=file_hash,
+                version=version,
                 status="pending",
                 dataset_id=dataset_id,
                 created_at=datetime.now()
