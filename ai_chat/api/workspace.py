@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, and_, or_
 from typing import List, Optional
 from ai_chat.database import get_db
 from pydantic import BaseModel
@@ -8,6 +8,10 @@ from datetime import datetime
 from ai_chat.models.workspace import Workgroup as DBWorkgroup, Workspace as DBWorkspace
 from ai_chat.models.document import Document, DocumentWorkspace
 from sqlalchemy import func
+import logging
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -21,10 +25,13 @@ class WorkgroupCreate(WorkgroupBase):
 
 class WorkgroupResponse(WorkgroupBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
 class WorkspaceBase(BaseModel):
     name: str
@@ -36,12 +43,15 @@ class WorkspaceCreate(WorkspaceBase):
 
 class WorkspaceResponse(WorkspaceBase):
     id: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     document_count: int = 0
     
     class Config:
         from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
 # 添加新的请求模型
 class WorkspaceAssociationRequest(BaseModel):
@@ -54,6 +64,9 @@ class WorkgroupUpdateRequest(WorkgroupCreate):
 
 class WorkspaceUpdateRequest(WorkspaceCreate):
     workspace_id: int
+
+class WorkgroupWithWorkspaces(WorkgroupResponse):
+    workspaces: List[WorkspaceResponse] = []
 
 # 工作组接口
 @router.get("/workgroups/list", response_model=List[WorkgroupResponse])
@@ -266,4 +279,60 @@ async def link_document_workspace(
         }
     except Exception as e:
         await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/workgroups-with-workspaces", response_model=List[WorkgroupWithWorkspaces])
+async def list_workgroups_with_workspaces(
+    db: AsyncSession = Depends(get_db)
+):
+    """获取所有工作组及其下属的工作空间"""
+    try:
+        logger.info("Fetching workgroups and workspaces...")
+        
+        # 获取所有工作组
+        workgroups_result = await db.execute(
+            select(DBWorkgroup).order_by(DBWorkgroup.created_at.desc())
+        )
+        workgroups = workgroups_result.scalars().all()
+        logger.info(f"Found {len(workgroups)} workgroups")
+
+        # 获取所有工作空间
+        workspaces_result = await db.execute(
+            select(DBWorkspace).order_by(DBWorkspace.created_at.desc())
+        )
+        workspaces = workspaces_result.scalars().all()
+        logger.info(f"Found {len(workspaces)} workspaces")
+
+        # 构建工作组和工作空间的映射关系
+        workspace_map = {}
+        for workspace in workspaces:
+            if workspace.group_id not in workspace_map:
+                workspace_map[workspace.group_id] = []
+            workspace_map[workspace.group_id].append(
+                WorkspaceResponse(
+                    id=workspace.id,
+                    name=workspace.name,
+                    description=workspace.description,
+                    group_id=workspace.group_id,
+                    created_at=workspace.created_at
+                )
+            )
+
+        # 构建响应数据
+        response = []
+        for workgroup in workgroups:
+            workgroup_data = WorkgroupWithWorkspaces(
+                id=workgroup.id,
+                name=workgroup.name,
+                description=workgroup.description,
+                created_at=workgroup.created_at,
+                workspaces=workspace_map.get(workgroup.id, [])
+            )
+            response.append(workgroup_data)
+
+        logger.info("Successfully built workgroups with workspaces response")
+        return response
+
+    except Exception as e:
+        logger.error(f"Error listing workgroups with workspaces: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

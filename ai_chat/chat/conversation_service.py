@@ -75,23 +75,102 @@ class ConversationService:
         conversation = result.scalar_one_or_none()
         return ConversationResponse.from_orm(conversation) if conversation else None
 
-    async def create_conversation(self, name: str, workspace_id: Optional[int] = None) -> DBConversation:
+    async def create_conversation(self, name: str, workspace_id: int) -> DBConversation:
         """创建新对话"""
+        logger.info(f"Creating conversation with name: {name} and workspace_id: {workspace_id}")
         try:
-            logger.info(f"Creating conversation with name: {name} and workspace_id: {workspace_id}")
+            # 获取AI回复
+            logger.info(f"Getting AI response for: {name}")
+            llm = LLMFactory.create_llm()
+            ai_response = await llm.chat(
+                system="你是一个有帮助的AI助手。请根据用户的问题提供准确、相关和有帮助的回答。",
+                history=[],
+                message=name
+            )
+            logger.info(f"Got AI response: {ai_response[:50]}...")
+
+            # 生成对话标题
+            logger.info("Generating conversation title...")
+            title = await self.generate_title(name, ai_response)
+            logger.info(f"Generated title: {title}")
+
+            # 创建对话
             conversation = DBConversation(
-                title=name,
+                title=title,
                 workspace_id=workspace_id,
                 created_at=datetime.utcnow()
             )
             self.db.add(conversation)
             await self.db.commit()
             await self.db.refresh(conversation)
-            logger.info(f"Created conversation with ID: {conversation.id} and workspace_id: {conversation.workspace_id}")
+            logger.info(f"Created conversation with ID: {conversation.id}")
+
+            # 添加用户消息
+            user_message = Message(
+                conversation_id=conversation.id,
+                role="user",
+                content=name,
+                created_at=datetime.utcnow()
+            )
+            self.db.add(user_message)
+            await self.db.commit()
+            logger.info(f"Added user message with ID: {user_message.id}")
+
+            # 添加AI回复消息
+            ai_message = Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=ai_response,
+                created_at=datetime.utcnow()
+            )
+            self.db.add(ai_message)
+            await self.db.commit()
+            logger.info(f"Added AI message with ID: {ai_message.id}")
+
+            # 直接返回对话对象，不再查询消息
             return conversation
+
         except Exception as e:
-            logger.error(f"Failed to create conversation: {str(e)}")
+            await self.db.rollback()
+            logger.error(f"Error creating conversation: {str(e)}")
             raise
+
+    async def generate_title(self, user_message: str, ai_response: str) -> str:
+        """生成对话标题"""
+        try:
+            # 构建提示词
+            prompt = f"""请根据以下对话生成一个简短、有意义的标题（不超过20个字）：
+
+用户：{user_message}
+AI：{ai_response}
+
+要求：
+1. 标题要简洁明了，不超过20个字
+2. 标题要能概括对话的主要内容
+3. 不要使用标点符号
+4. 不要使用"对话"、"聊天"等词
+5. 直接返回标题，不要其他内容
+
+标题："""
+
+            # 调用AI服务生成标题
+            llm = LLMFactory.create_llm()
+            title = await llm.chat(
+                system="你是一个标题生成助手。请根据对话内容生成简短、有意义的标题。",
+                history=[],
+                message=prompt
+            )
+            
+            # 清理标题
+            title = title.strip()
+            if len(title) > 20:
+                title = title[:20]
+            
+            return title
+        except Exception as e:
+            logger.error(f"Error generating title: {str(e)}")
+            # 如果生成标题失败，使用用户消息的前20个字符
+            return user_message[:20] if user_message else "新对话"
 
     async def create_message(self, message: MessageCreate) -> MessageResponse:
         """创建新消息"""
