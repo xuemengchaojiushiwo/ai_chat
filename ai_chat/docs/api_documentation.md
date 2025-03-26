@@ -11,16 +11,16 @@
 {
   "workgroups": [
     {
-      "id": 1,
-      "name": "研发团队",
-      "description": "负责产品研发的团队",
-      "created_at": "2024-03-13T10:30:00Z"
+      "id": 1,                    // 工作组唯一标识符
+      "name": "研发团队",          // 工作组名称
+      "description": "负责产品研发的团队", // 工作组描述
+      "created_at": "2024-03-13T10:30:00Z" // 创建时间
     },
     {
-      "id": 2,
-      "name": "市场团队",
-      "description": "负责市场营销的团队",
-      "created_at": "2024-03-13T11:00:00Z"
+      "id": 2,                    // 工作组唯一标识符
+      "name": "市场团队",          // 工作组名称
+      "description": "负责市场营销的团队", // 工作组描述
+      "created_at": "2024-03-13T11:00:00Z" // 创建时间
     }
   ]
 }
@@ -31,17 +31,17 @@
 - 请求体示例：
 ```json
 {
-  "name": "产品团队",
-  "description": "负责产品规划和设计的团队"
+  "name": "产品团队",              // 工作组名称
+  "description": "负责产品规划和设计的团队" // 工作组描述
 }
 ```
 - 返回示例：
 ```json
 {
-  "id": 3,
-  "name": "产品团队",
-  "description": "负责产品规划和设计的团队",
-  "created_at": "2024-03-13T14:20:00Z"
+  "id": 3,                    // 工作组唯一标识符
+  "name": "产品团队",          // 工作组名称
+  "description": "负责产品规划和设计的团队", // 工作组描述
+  "created_at": "2024-03-13T14:20:00Z" // 创建时间
 }
 ```
 
@@ -50,18 +50,18 @@
 - 请求体示例：
 ```json
 {
-  "name": "产品研发团队",
-  "description": "负责产品规划、设计和开发的团队"
+  "name": "产品研发团队",        // 工作组名称
+  "description": "负责产品规划、设计和开发的团队" // 工作组描述
 }
 ```
 - 返回示例：
 ```json
 {
-  "id": 3,
-  "name": "产品研发团队",
-  "description": "负责产品规划、设计和开发的团队",
-  "created_at": "2024-03-13T14:20:00Z",
-  "updated_at": "2024-03-13T15:30:00Z"
+  "id": 3,                    // 工作组唯一标识符
+  "name": "产品研发团队",      // 工作组名称
+  "description": "负责产品规划、设计和开发的团队", // 工作组描述
+  "created_at": "2024-03-13T14:20:00Z", // 创建时间
+  "updated_at": "2024-03-13T15:30:00Z" // 更新时间
 }
 ```
 
@@ -69,24 +69,25 @@
 
 #### GET /api/workspaces
 - 功能：获取工作空间列表
-- 查询参数示例：`?group_id=1`
+- 查询参数：
+  - `group_id`: 工作组ID，用于筛选特定工作组下的工作空间
 - 返回示例：
 ```json
 {
   "workspaces": [
     {
-      "id": 1,
-      "name": "AI项目",
-      "description": "AI相关项目文档和对话",
-      "group_id": 1,
-      "created_at": "2024-03-13T10:35:00Z"
+      "id": 1,                    // 工作空间唯一标识符
+      "name": "AI项目",           // 工作空间名称
+      "description": "AI相关项目文档和对话", // 工作空间描述
+      "group_id": 1,              // 所属工作组ID
+      "created_at": "2024-03-13T10:35:00Z" // 创建时间
     },
     {
-      "id": 2,
-      "name": "市场调研",
-      "description": "市场调研资料和分析",
-      "group_id": 1,
-      "created_at": "2024-03-13T11:20:00Z"
+      "id": 2,                    // 工作空间唯一标识符
+      "name": "市场调研",         // 工作空间名称
+      "description": "市场调研资料和分析", // 工作空间描述
+      "group_id": 1,              // 所属工作组ID
+      "created_at": "2024-03-13T11:20:00Z" // 创建时间
     }
   ]
 }
@@ -241,10 +242,10 @@ file: [二进制文件数据]
 {
   "conversations": [
     {
-      "id": 1,
-      "name": "产品讨论",
-      "created_at": "2024-03-13T14:35:00Z",
-      "messages": []
+      "id": 1,                    // 对话唯一标识符
+      "name": "产品讨论",          // 对话名称
+      "created_at": "2024-03-13T14:35:00Z", // 创建时间
+      "messages": []              // 消息列表（初始为空）
     }
   ]
 }
@@ -255,18 +256,18 @@ file: [二进制文件数据]
 - 请求体示例：
 ```json
 {
-  "name": "产品讨论",
-  "workspace_id": 1
+  "name": "产品讨论",              // 对话名称
+  "workspace_id": 1               // 所属工作空间ID
 }
 ```
 - 返回示例：
 ```json
 {
-  "id": 1,
-  "name": "产品讨论",
-  "workspace_id": 1,
-  "created_at": "2024-03-13T14:35:00Z",
-  "messages": []
+  "id": 1,                    // 对话唯一标识符
+  "name": "产品讨论",          // 对话名称
+  "workspace_id": 1,          // 所属工作空间ID
+  "created_at": "2024-03-13T14:35:00Z", // 创建时间
+  "messages": []              // 消息列表（初始为空）
 }
 ```
 
@@ -277,29 +278,29 @@ file: [二进制文件数据]
 {
   "messages": [
     {
-      "id": 1,
-      "conversation_id": 1,
-      "role": "user",
-      "content": "请分析一下产品需求文档中的核心功能",
-      "tokens": 20,
-      "citations": [],
-      "created_at": "2024-03-13T14:36:00Z"
+      "id": 1,                    // 消息唯一标识符
+      "conversation_id": 1,       // 所属对话ID
+      "role": "user",             // 消息发送者角色（user/assistant）
+      "content": "请分析一下产品需求文档中的核心功能", // 消息内容
+      "tokens": 20,               // 消息的token数量
+      "citations": [],            // 引用列表（初始为空）
+      "created_at": "2024-03-13T14:36:00Z" // 创建时间
     },
     {
-      "id": 2,
-      "conversation_id": 1,
-      "role": "assistant",
-      "content": "根据文档分析，核心功能包括...",
-      "tokens": 150,
-      "citations": [
+      "id": 2,                    // 消息唯一标识符
+      "conversation_id": 1,       // 所属对话ID
+      "role": "assistant",        // 消息发送者角色
+      "content": "根据文档分析，核心功能包括...", // 消息内容
+      "tokens": 150,              // 消息的token数量
+      "citations": [              // 引用列表
         {
-          "text": "系统应该支持多模态输入...",
-          "document_id": 1,
-          "segment_id": 3,
-          "index": 1
+          "text": "系统应该支持多模态输入...", // 引用的原文内容
+          "document_id": 1,       // 引用来源的文档ID
+          "segment_id": 3,        // 文档中的片段ID
+          "index": 1              // 引用在当前回复中的序号
         }
       ],
-      "created_at": "2024-03-13T14:36:30Z"
+      "created_at": "2024-03-13T14:36:30Z" // 创建时间
     }
   ]
 }
@@ -310,8 +311,8 @@ file: [二进制文件数据]
 - 请求体示例：
 ```json
 {
-  "message": "请分析一下产品需求文档中的核心功能",
-  "use_rag": true
+  "message": "请分析一下产品需求文档中的核心功能", // 用户发送的消息内容
+  "use_rag": true               // 是否启用文档知识库检索（RAG）功能
 }
 ```
 - 参数说明：
@@ -320,20 +321,20 @@ file: [二进制文件数据]
 - 返回示例：
 ```json
 {
-  "id": 2,
-  "conversation_id": 1,
-  "role": "assistant",
-  "content": "根据文档分析，核心功能包括...",
-  "tokens": 150,
-  "citations": [
+  "id": 2,                    // 消息唯一标识符
+  "conversation_id": 1,       // 所属对话ID
+  "role": "assistant",        // 消息发送者角色
+  "content": "根据文档分析，核心功能包括...", // 消息内容
+  "tokens": 150,              // 消息的token数量
+  "citations": [              // 引用列表
     {
-      "text": "系统应该支持多模态输入...",
-      "document_id": 1,
-      "segment_id": 3,
-      "index": 1
+      "text": "系统应该支持多模态输入...", // 引用的原文内容
+      "document_id": 1,       // 引用来源的文档ID
+      "segment_id": 3,        // 文档中的片段ID
+      "index": 1              // 引用在当前回复中的序号
     }
   ],
-  "created_at": "2024-03-13T14:36:30Z"
+  "created_at": "2024-03-13T14:36:30Z" // 创建时间
 }
 ```
 
@@ -342,53 +343,53 @@ file: [二进制文件数据]
 - 请求体示例：
 ```json
 {
-  "message": "对话内容..."
+  "message": "对话内容..."        // 用于生成标题的对话内容
 }
 ```
 - 返回示例：
 ```json
 {
-  "title": "生成的标题"
+  "title": "生成的标题"           // AI生成的对话标题
 }
 ```
 
 ### 3.2 引用说明
 
 消息中的引用（citations）字段说明：
-- `text`: 引用的原文内容
-- `document_id`: 引用来源的文档ID
-- `segment_id`: 文档中的片段ID
-- `index`: 引用在当前回复中的序号
+- `text`: 引用的原文内容（从文档中提取的相关文本）
+- `document_id`: 引用来源的文档ID（用于定位源文档）
+- `segment_id`: 文档中的片段ID（用于定位具体段落）
+- `index`: 引用在当前回复中的序号（用于排序和展示）
 
 ## 4. 数据模型
 
 ### 4.1 Message（消息）
 ```json
 {
-  "id": 1,
-  "conversation_id": 1,
-  "role": "user|assistant",
-  "content": "消息内容",
-  "tokens": 20,
-  "citations": [
+  "id": 1,                    // 消息唯一标识符
+  "conversation_id": 1,       // 所属对话ID
+  "role": "user|assistant",   // 消息发送者角色
+  "content": "消息内容",      // 消息正文
+  "tokens": 20,               // 消息的token数量
+  "citations": [              // 引用列表
     {
-      "text": "引用的文本内容",
-      "document_id": 1,
-      "segment_id": 1,
-      "index": 1
+      "text": "引用的文本内容", // 引用的原文内容
+      "document_id": 1,       // 引用来源的文档ID
+      "segment_id": 1,        // 文档中的片段ID
+      "index": 1              // 引用在当前回复中的序号
     }
   ],
-  "created_at": "2024-03-13T14:36:00Z"
+  "created_at": "2024-03-13T14:36:00Z" // 创建时间
 }
 ```
 
 ### 4.2 Citation（引用）
 ```json
 {
-  "text": "引用的文本内容",
-  "document_id": 1,
-  "segment_id": 1,
-  "index": 1
+  "text": "引用的文本内容",     // 引用的原文内容
+  "document_id": 1,           // 引用来源的文档ID
+  "segment_id": 1,            // 文档中的片段ID
+  "index": 1                  // 引用在当前回复中的序号
 }
 ```
 
@@ -397,45 +398,45 @@ file: [二进制文件数据]
 ### 5.1 参数错误 (400)
 ```json
 {
-  "error": "Bad Request",
-  "message": "参数错误说明",
-  "code": 400
+  "error": "Bad Request",     // 错误类型
+  "message": "参数错误说明",    // 错误描述
+  "code": 400                 // HTTP状态码
 }
 ```
 
 ### 5.2 未授权 (401)
 ```json
 {
-  "error": "Unauthorized",
-  "message": "请先登录",
-  "code": 401
+  "error": "Unauthorized",    // 错误类型
+  "message": "请先登录",       // 错误描述
+  "code": 401                 // HTTP状态码
 }
 ```
 
 ### 5.3 禁止访问 (403)
 ```json
 {
-  "error": "Forbidden",
-  "message": "没有访问权限",
-  "code": 403
+  "error": "Forbidden",       // 错误类型
+  "message": "没有访问权限",    // 错误描述
+  "code": 403                 // HTTP状态码
 }
 ```
 
 ### 5.4 资源不存在 (404)
 ```json
 {
-  "error": "Not Found",
-  "message": "找不到指定的资源",
-  "code": 404
+  "error": "Not Found",       // 错误类型
+  "message": "找不到指定的资源", // 错误描述
+  "code": 404                 // HTTP状态码
 }
 ```
 
 ### 5.5 服务器错误 (500)
 ```json
 {
-  "error": "Internal Server Error",
-  "message": "服务器内部错误",
-  "code": 500
+  "error": "Internal Server Error", // 错误类型
+  "message": "服务器内部错误",      // 错误描述
+  "code": 500                      // HTTP状态码
 }
 ```
 
@@ -443,7 +444,7 @@ file: [二进制文件数据]
 
 1. 所有请求需要在 Header 中包含认证信息：
 ```
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...  // JWT认证令牌
 ```
 
 2. RAG（检索增强生成）功能说明：
