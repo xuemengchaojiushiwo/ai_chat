@@ -77,6 +77,7 @@ class Document(BaseModel):
     file_hash: str
     error: Optional[str] = None
     created_at: Optional[str] = None
+    creator: str = "admin"
     workspaces: List[WorkspaceInfo] = []  # 添加工作空间列表字段
 
     class Config:

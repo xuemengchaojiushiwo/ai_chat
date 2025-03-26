@@ -99,31 +99,26 @@
 #### GET /api/v1/documents/list
 - 功能：获取文档列表
 - 查询参数：
-  - `show_all_versions`: 布尔值，是否显示所有版本（默认为 false，只显示最新版本）
+  - `show_all_versions`: 布尔值，是否显示所有版本（默认为 True，显示所有版本）
 - 返回示例：
 ```json
 {
   "documents": [
     {
-      "id": 1,
-      "dataset_id": 1,
-      "name": "产品需求文档.pdf",
-      "mime_type": "application/pdf",
-      "status": "processed",
-      "size": "1.2MB",
-      "version": 1,
-      "file_hash": "abc123de",
-      "created_at": "2024-03-13T10:40:00Z",
-      "workspaces": [
+      "id": 1,                    // 文档唯一标识符
+      "dataset_id": 1,           // 数据集ID，用于文档分类管理
+      "name": "产品需求文档.pdf",  // 文档名称
+      "mime_type": "application/pdf", // 文档MIME类型
+      "status": "processed",      // 文档处理状态
+      "size": "1.2MB",           // 文档大小
+      "version": 1,              // 文档版本号
+      "file_hash": "abc123de",   // 文件哈希值，用于去重
+      "created_at": "2024-03-13T10:40:00Z", // 创建时间
+      "workspaces": [            // 关联的工作空间列表
         {
-          "id": 1,
-          "name": "AI项目",
-          "description": "AI相关项目文档和对话"
-        },
-        {
-          "id": 2,
-          "name": "产品规划",
-          "description": "产品相关文档"
+          "id": 1,               // 工作空间ID
+          "name": "AI项目",       // 工作空间名称
+          "description": "AI相关项目文档和对话" // 工作空间描述
         }
       ]
     }
@@ -140,16 +135,17 @@ file: [二进制文件数据]
 - 返回示例：
 ```json
 {
-  "id": 3,
-  "dataset_id": 1,
-  "name": "技术架构设计.pdf",
-  "mime_type": "application/pdf",
-  "status": "processing",
-  "size": "2.5MB",
-  "version": 1,
-  "file_hash": "def456gh",
-  "created_at": "2024-03-13T14:30:00Z",
-  "workspaces": []
+  "id": 3,                    // 文档唯一标识符
+  "dataset_id": 1,           // 数据集ID
+  "name": "技术架构设计.pdf",  // 文档名称
+  "mime_type": "application/pdf", // 文档MIME类型
+  "status": "processing",     // 文档处理状态
+  "size": "2.5MB",           // 文档大小
+  "version": 1,              // 文档版本号
+  "file_hash": "def456gh",   // 文件哈希值
+  "created_at": "2024-03-13T14:30:00Z", // 创建时间
+  "creator":"admin",//创建人
+  "workspaces": []           // 关联的工作空间列表（初始为空）
 }
 ```
 
@@ -160,15 +156,15 @@ file: [二进制文件数据]
 - 请求体示例：
 ```json
 {
-  "document_ids": [1, 2, 3],
-  "workspace_ids": [1, 2]
+  "document_ids": [1, 2, 3],  // 要关联的文档ID列表
+  "workspace_ids": [1, 2]     // 要关联的工作空间ID列表
 }
 ```
 - 返回示例：
 ```json
 {
-  "status": "success",
-  "message": "Successfully linked 3 documents to 2 workspaces"
+  "status": "success",        // 操作状态
+  "message": "Successfully linked 3 documents to 2 workspaces" // 操作结果描述
 }
 ```
 
@@ -177,27 +173,27 @@ file: [二进制文件数据]
 文档系统支持版本控制，主要特点：
 1. 每个文档都有唯一的文件哈希值和版本号
 2. 相同文件（相同哈希值）会自动递增版本号
-3. 默认只显示最新版本，可通过 `show_all_versions` 参数查看所有版本
+3. 默认显示所有版本，可通过 `show_all_versions` 参数控制显示
 4. 文件名格式：`原始文件名_v版本号_哈希值前8位.扩展名`
 
 ### 2.4 支持的文件类型
 ```json
 {
-  "application/pdf": ".pdf",
-  "application/msword": ".doc",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-  "application/vnd.ms-excel": ".xls",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-  "text/plain": ".txt",
-  "text/csv": ".csv"
+  "application/pdf": ".pdf",   // PDF文档
+  "application/msword": ".doc", // Word文档（旧格式）
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx", // Word文档（新格式）
+  "application/vnd.ms-excel": ".xls", // Excel文档（旧格式）
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx", // Excel文档（新格式）
+  "text/plain": ".txt",        // 纯文本文件
+  "text/csv": ".csv"          // CSV文件
 }
 ```
 
 ### 2.5 文档状态说明
-- `pending`: 等待处理
-- `processing`: 处理中
-- `processed`: 处理完成
-- `error`: 处理出错
+- `pending`: 等待处理（文档已上传但尚未开始处理）
+- `processing`: 处理中（文档正在被系统处理）
+- `processed`: 处理完成（文档处理成功，可以使用）
+- `error`: 处理出错（文档处理失败）
 
 ### 2.6 文档下载
 
@@ -206,8 +202,8 @@ file: [二进制文件数据]
 - 返回：文件二进制流
 - 响应头：
   ```
-  Content-Disposition: attachment; filename="文件名"
-  Content-Type: 文件MIME类型
+  Content-Disposition: attachment; filename="文件名"  // 下载时的文件名
+  Content-Type: 文件MIME类型                        // 文件类型
   ```
 
 ### 2.7 文档状态查询
@@ -217,9 +213,9 @@ file: [二进制文件数据]
 - 返回示例：
 ```json
 {
-  "status": "processed",
-  "error": null,
-  "created_at": "2024-03-13T14:30:00Z"
+  "status": "processed",      // 文档处理状态
+  "error": null,             // 错误信息（如果有）
+  "created_at": "2024-03-13T14:30:00Z" // 创建时间
 }
 ```
 
@@ -228,9 +224,9 @@ file: [二进制文件数据]
 - 返回示例：
 ```json
 {
-  "total_segments": 10,
-  "processed_segments": 10,
-  "status": "completed"
+  "total_segments": 10,      // 文档总片段数
+  "processed_segments": 10,  // 已处理的片段数
+  "status": "completed"      // 处理状态
 }
 ```
 

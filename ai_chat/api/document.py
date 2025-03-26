@@ -79,7 +79,7 @@ def format_size(size_in_bytes: int) -> str:
 @router.get("/documents/list", response_model=List[DocumentSchema])
 async def list_documents(
     db: AsyncSession = Depends(get_db),
-    show_all_versions: bool = Query(False, description="是否显示所有版本")
+    show_all_versions: bool = Query(True, description="是否显示所有版本")
 ):
     """获取文档列表"""
     try:
@@ -148,6 +148,7 @@ async def list_documents(
                 file_hash=doc.file_hash[:8],  # 添加文件哈希前8位
                 error=doc.error,
                 created_at=doc.created_at.isoformat() if doc.created_at else None,
+                creator = "admin",
                 workspaces=document_workspaces.get(doc.id, [])  # 添加关联的工作空间列表
             )
             for doc in documents
