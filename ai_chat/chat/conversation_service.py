@@ -85,6 +85,7 @@ class ConversationService:
             
             # 根据 workspace_id 决定是否使用 RAG
             system_prompt = "你是一个有帮助的AI助手。请根据用户的问题提供准确、相关和有帮助的回答。"
+            relevant_docs = []
             if workspace_id > 0:
                 # 如果 workspace_id > 0，使用 RAG
                 relevant_docs = await self.retriever.search_with_embedding(
@@ -119,36 +120,46 @@ class ConversationService:
             self.db.add(conversation)
             await self.db.commit()
             await self.db.refresh(conversation)
-            logger.info(f"Created conversation with ID: {conversation.id}")
-
+            
             # 添加用户消息
             user_message = Message(
                 conversation_id=conversation.id,
-                role="user",
                 content=name,
+                role="user",
                 created_at=datetime.utcnow()
             )
             self.db.add(user_message)
-            await self.db.commit()
-            logger.info(f"Added user message with ID: {user_message.id}")
 
-            # 添加AI回复消息
-            ai_message = Message(
+            # 添加AI回复消息，包含引用
+            citations = [
+                {
+                    "text": doc.get('content', ''),
+                    "document_id": doc.get('document_id', ''),
+                    "segment_id": doc.get('segment_id', ''),
+                    "similarity": doc.get('similarity', 0),
+                    "index": i + 1
+                }
+                for i, doc in enumerate(relevant_docs)
+                if doc.get('similarity', 0) > self.default_retrieval_config.score_threshold
+            ]
+
+            assistant_message = Message(
                 conversation_id=conversation.id,
-                role="assistant",
                 content=ai_response,
-                created_at=datetime.utcnow()
+                role="assistant",
+                created_at=datetime.utcnow(),
+                citations=citations
             )
-            self.db.add(ai_message)
+            self.db.add(assistant_message)
+            
             await self.db.commit()
-            logger.info(f"Added AI message with ID: {ai_message.id}")
-
+            
             return conversation
 
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Error creating conversation: {str(e)}")
-            raise
+            raise Exception(f"创建对话时出错: {str(e)}")
 
     async def generate_title(self, user_message: str, ai_response: str) -> str:
         """生成对话标题"""
@@ -200,15 +211,14 @@ AI：{ai_response}
         await self.db.refresh(db_message)
         return MessageResponse.from_orm(db_message)
 
-    async def get_messages(self, conversation_id: int) -> List[MessageResponse]:
+    async def get_messages(self, conversation_id: int) -> List[Message]:
         """获取对话消息历史"""
         result = await self.db.execute(
             select(Message)
             .filter(Message.conversation_id == conversation_id)
             .order_by(Message.created_at)
         )
-        messages = result.scalars().all()
-        return [MessageResponse.from_orm(msg) for msg in messages]
+        return result.scalars().all()
 
     async def process_retrieved_documents(self, docs: List[Dict], query: str) -> List[Dict]:
         """处理检索到的文档,计算相似度分数"""

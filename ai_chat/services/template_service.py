@@ -23,10 +23,12 @@ class TemplateService:
         # 使用 LLM 生成结构化模板
         prompt = f"""请根据以下描述生成一个结构化的模板定义。
 
-输入描述：{template_data.content}
+输入描述：{template_data.description}
 
 严格按照以下JSON格式返回（不要添加任何其他内容）：
 {{
+    "name": "模板的中文名称（例如：会议通知模板）",
+    "content": "模板的原始内容，使用 {{variable_name}} 格式的变量",
     "prompt_template": "模板的HTML内容，使用 {{variable_name}} 格式的变量",
     "variables": [
         {{
@@ -34,9 +36,10 @@ class TemplateService:
             "description": "变量的中文描述"
         }}
     ],
-    "category": "模板分类",
+    "category": "模板分类（使用中文，例如：办公、通知、报告等）",
     "description": "模板的详细描述",
-    "style": "模板的CSS样式"
+    "style": "模板的CSS样式",
+    "author": "模板作者"
 }}"""
 
         try:
@@ -62,19 +65,20 @@ class TemplateService:
                 result = json.loads(json_str)
                 
                 # 验证必需的字段
-                if not all(key in result for key in ["prompt_template", "variables"]):
+                required_fields = ["name", "content", "prompt_template", "variables"]
+                if not all(key in result for key in required_fields):
                     raise ValueError("响应缺少必需的字段")
                 
                 # 创建模板对象
                 db_template = Template(
-                    name=template_data.name,
-                    description=result.get("description", template_data.description),
-                    content=template_data.content,  # 保存原始描述
+                    name=result["name"],
+                    description=result["description"],
+                    content=result["content"],
                     prompt_template=result["prompt_template"],
-                    variables={"variables": result["variables"]},  # 存储时使用字典格式
-                    category=result.get("category", template_data.category),
-                    author=template_data.author,
-                    style=result.get("style", "")  # 保存CSS样式
+                    variables={"variables": result["variables"]},
+                    category=result.get("category", "通用"),
+                    author=result.get("author", "AI助手"),
+                    style=result.get("style", "")
                 )
                 
                 self.db.add(db_template)
@@ -88,7 +92,7 @@ class TemplateService:
                     "description": db_template.description,
                     "content": db_template.content,
                     "prompt_template": db_template.prompt_template,
-                    "variables": db_template.variables["variables"],  # 返回时只返回变量列表
+                    "variables": db_template.variables["variables"],
                     "category": db_template.category,
                     "author": db_template.author,
                     "created_at": db_template.created_at,

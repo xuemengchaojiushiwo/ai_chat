@@ -202,7 +202,7 @@ async def get_conversation_messages(
                 "conversation_id": msg.conversation_id,
                 "role": msg.role,
                 "content": msg.content,
-                "citations": msg.citations if hasattr(msg, 'citations') else [],
+                "citations": msg.citations if msg.citations is not None else [],
                 "created_at": msg.created_at.isoformat() if msg.created_at else None
             }
             for msg in messages

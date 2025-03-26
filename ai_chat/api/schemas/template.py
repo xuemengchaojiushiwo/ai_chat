@@ -13,8 +13,13 @@ class TemplateBase(BaseModel):
     category: Optional[str] = Field(None, example="办公")
     author: Optional[str] = Field(None, example="系统管理员")
 
-class TemplateCreate(TemplateBase):
-    pass
+class TemplateCreate(BaseModel):
+    """创建模板的请求模型"""
+    description: str = Field(
+        ..., 
+        description="模板描述，用于自动生成完整模板内容",
+        example="标准会议通知模板，包含会议主题、时间、地点等信息"
+    )
 
 class TemplateResponse(TemplateBase):
     id: int = Field(..., example=1)
