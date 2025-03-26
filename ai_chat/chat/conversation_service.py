@@ -82,8 +82,24 @@ class ConversationService:
             # 获取AI回复
             logger.info(f"Getting AI response for: {name}")
             llm = LLMFactory.create_llm()
+            
+            # 根据 workspace_id 决定是否使用 RAG
+            system_prompt = "你是一个有帮助的AI助手。请根据用户的问题提供准确、相关和有帮助的回答。"
+            if workspace_id > 0:
+                # 如果 workspace_id > 0，使用 RAG
+                relevant_docs = await self.retriever.search_with_embedding(
+                    name,
+                    limit=self.default_retrieval_config.top_k,
+                    workspace_id=workspace_id
+                )
+                processed_docs = await self.process_retrieved_documents(relevant_docs, name)
+                system_prompt = self._build_system_prompt(processed_docs)
+                logger.info("Using RAG for conversation creation")
+            else:
+                logger.info("Creating conversation without RAG (workspace_id = 0)")
+
             ai_response = await llm.chat(
-                system="你是一个有帮助的AI助手。请根据用户的问题提供准确、相关和有帮助的回答。",
+                system=system_prompt,
                 history=[],
                 message=name
             )
@@ -127,7 +143,6 @@ class ConversationService:
             await self.db.commit()
             logger.info(f"Added AI message with ID: {ai_message.id}")
 
-            # 直接返回对话对象，不再查询消息
             return conversation
 
         except Exception as e:
