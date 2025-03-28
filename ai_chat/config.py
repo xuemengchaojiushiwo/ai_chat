@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 # MySQL数据库配置
 MYSQL_USER = "root"
-MYSQL_PASSWORD = "xmc131455"
+MYSQL_PASSWORD = ""
 MYSQL_HOST = "localhost"
 MYSQL_PORT = "3306"
 MYSQL_DATABASE = "ai_chat"
