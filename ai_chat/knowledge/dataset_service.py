@@ -1,27 +1,22 @@
+import hashlib
+import io
+import json
+import logging
 import os
 from typing import List, Optional, BinaryIO, Any
-from sqlalchemy.ext.asyncio import AsyncSession
+
+import PyPDF2
+import numpy as np
 from sqlalchemy import select, delete, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.dataset import Dataset as DBDataset
 from ..models.document import Document as DBDocument, DocumentSegment as DBDocumentSegment
+from ..models.workspace import Workspace as DBWorkspace
+from ..services.vector_store import vector_store
+from ..utils.embeddings import EmbeddingFactory
 from ..utils.file_processor import process_file
 from ..utils.text_splitter import split_text
-from ..utils.embeddings import EmbeddingFactory
-from ..services.vector_store import vector_store
-import asyncio
-import chardet
-import logging
-import json
-import numpy as np
-from io import BytesIO
-import re
-import PyPDF2
-import io
-from datetime import datetime
-from ..models.dataset import Dataset as DBDataset
-from ..models.types import DocumentSegmentCreate
-from ..models.workspace import Workspace as DBWorkspace
-import hashlib
-import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -180,146 +175,116 @@ class DatasetService:
             
             file.seek(0)  # 重置文件指针
 
-            # 根据文件类型提取文本
-            if mime_type == 'application/pdf':
-                logger.info("Processing PDF file")
-                content = await self._extract_text_from_pdf(file)
-                logger.info(f"Extracted text from PDF: {len(content)} characters")
-            else:
-                # 处理文本文件
-                raw_content = file.read()
-                # 检测编码
-                result = chardet.detect(raw_content)
-                encoding = result['encoding'] if result['encoding'] else 'utf-8'
-                content = raw_content.decode(encoding)
-                logger.info(f"Read text file with encoding {encoding}")
+            # 处理文件并获取文本内容和位置信息
+            content, mime_type, text_blocks = process_file(file_path)
+            logger.info(f"Processed file content length: {len(content)} characters")
+            logger.info(f"Number of text blocks: {len(text_blocks)}")
 
             if not content.strip():
                 raise ValueError("Extracted content is empty")
 
             # 创建文档记录
             document = DBDocument(
-                name=unique_filename,
-                original_name=filename,
-                mime_type=mime_type,
-                size=file_size,
-                content=content,
+                name=filename,
                 file_path=file_path,
                 file_hash=file_hash,
+                size=file_size,
+                mime_type=mime_type,
                 version=version,
-                status="pending",
-                dataset_id=dataset_id,
-                created_at=datetime.now()
+                dataset_id=dataset.id,
+                original_name=filename
             )
             self.db.add(document)
             await self.db.commit()
             await self.db.refresh(document)
             logger.info(f"Created document record with ID: {document.id}")
 
-            # 分段并生成向量表示
-            segments = self._split_text(content)
-            logger.info(f"Split text into {len(segments)} segments")
-            
-            for i, segment_content in enumerate(segments, 1):
-                try:
-                    logger.info(f"Processing segment {i}/{len(segments)}")
-                    # 获取embedding
-                    embeddings = await self.embedding_factory.get_embeddings(segment_content)
-                    logger.info(f"Raw embedding type: {type(embeddings)}")
-                    
-                    # 转换embedding为原生Python类型并确保正确的格式
-                    embeddings = self._convert_to_native_types(embeddings)
-                    # 确保是一维列表
-                    if isinstance(embeddings, list) and isinstance(embeddings[0], list) and isinstance(embeddings[0][0], list):
-                        embeddings = embeddings[0][0]  # 取出内层列表
-                    elif isinstance(embeddings, list) and isinstance(embeddings[0], list):
-                        embeddings = embeddings[0]  # 取出内层列表
-                    
-                    logger.info(f"Converted embedding type: {type(embeddings)}, length: {len(embeddings)}")
-                    logger.info(f"Embedding format check - is list: {isinstance(embeddings, list)}")
-                    logger.info(f"First few values: {embeddings[:5]}")
+            # 分割文本并创建文档片段
+            segments = split_text(content)
+            logger.info(f"Split content into {len(segments)} segments")
 
-                    # 生成唯一的chroma_id
-                    chroma_id = f"{document.id}_{i}"
+            # 批量生成向量嵌入
+            all_embeddings = await self.embedding_factory.get_embeddings_batch(segments)
+            logger.info(f"Generated embeddings for {len(segments)} segments")
 
-                    # 将embedding存储到Chroma
-                    try:
-                        await vector_store.add_embeddings(
-                            ids=[chroma_id],
-                            embeddings=[embeddings],  # 现在应该是正确的格式
-                            documents=[segment_content],
-                            metadatas=[{
-                                "document_id": str(document.id),
-                                "segment_id": i,
-                                "segment_position": i,
-                                "document_name": document.name
-                            }]
-                        )
-                        logger.info(f"Successfully added embedding to Chroma for segment {i}")
+            # 准备批量插入的数据
+            segment_records = []
+            embeddings_batch = []
+            ids_batch = []
+            documents_batch = []
+            metadatas_batch = []
 
-                        # 创建文档段落记录
-                        segment = DBDocumentSegment(
-                            document_id=document.id,
-                            content=segment_content,
-                            chroma_id=chroma_id,
-                            position=i,
-                            word_count=len(segment_content.split()),
-                            tokens=len(segment_content),
-                            status="completed",
-                            dataset_id=dataset.id
-                        )
-                        self.db.add(segment)
-                        logger.info(f"Created document segment record for segment {i}")
+            for i, (segment, embedding) in enumerate(zip(segments, all_embeddings)):
+                # 查找对应的文本块位置信息
+                block_info = None
+                if text_blocks:
+                    # 使用简单的文本匹配来找到对应的文本块
+                    for block in text_blocks:
+                        if block['text'] in segment:
+                            block_info = block
+                            break
 
-                    except Exception as e:
-                        logger.error(f"Error adding embedding to Chroma for segment {i}: {str(e)}")
-                        logger.error(f"Embedding shape: {len(embeddings) if embeddings else 'None'}")
-                        logger.error(f"Document ID: {document.id}, Segment position: {i}")
-                        logger.error(f"Full error details:", exc_info=True)
-                        # 创建失败状态的段落记录
-                        segment = DBDocumentSegment(
-                            document_id=document.id,
-                            content=segment_content,
-                            position=i,
-                            word_count=len(segment_content.split()),
-                            tokens=len(segment_content),
-                            status="failed",
-                            dataset_id=dataset.id
-                        )
-                        self.db.add(segment)
-                        await self.db.commit()  # 立即提交以避免后续错误影响
-                        logger.info(f"Created failed document segment record for segment {i}")
+                # 生成唯一的 chroma_id
+                chroma_id = f"doc_{document.id}_seg_{i}"
 
-                except Exception as e:
-                    logger.error(f"Error processing segment {i}: {str(e)}")
-                    logger.error(f"Full error details:", exc_info=True)
-                    # 创建失败状态的段落记录
-                    segment = DBDocumentSegment(
-                        document_id=document.id,
-                        content=segment_content,
-                        position=i,
-                        word_count=len(segment_content.split()),
-                        tokens=len(segment_content),
-                        status="failed",
-                        dataset_id=dataset.id
-                    )
-                    self.db.add(segment)
-                    await self.db.commit()  # 立即提交以避免后续错误影响
-                    logger.info(f"Created failed document segment record for segment {i}")
+                # 创建文档片段记录
+                segment_record = DBDocumentSegment(
+                    document_id=document.id,
+                    content=segment,
+                    position=i,
+                    word_count=len(segment.split()),
+                    tokens=len(segment),
+                    page_number=block_info['page_number'] if block_info else None,
+                    bbox_x=block_info['bbox_x'] if block_info else None,
+                    bbox_y=block_info['bbox_y'] if block_info else None,
+                    bbox_width=block_info['bbox_width'] if block_info else None,
+                    bbox_height=block_info['bbox_height'] if block_info else None,
+                    chroma_id=chroma_id
+                )
+                segment_records.append(segment_record)
 
-            # 更新文档状态
-            document.status = "completed"
+                # 确保 embedding 是一维列表
+                if isinstance(embedding, np.ndarray):
+                    embedding = embedding.flatten().tolist()
+                elif isinstance(embedding, list) and len(embedding) == 1 and isinstance(embedding[0], np.ndarray):
+                    embedding = embedding[0].flatten().tolist()
+
+                embeddings_batch.append(embedding)
+                ids_batch.append(chroma_id)
+                documents_batch.append(segment)
+
+            # 批量保存文档片段
+            self.db.add_all(segment_records)
             await self.db.commit()
-            logger.info(f"Document processing completed. ID: {document.id}")
-            
+            logger.info("Created all document segments")
+
+            # 更新元数据批处理数据
+            metadatas_batch = [
+                {
+                    "document_id": str(document.id),
+                    "segment_id": str(segment_record.id),
+                    "page_number": segment_record.page_number
+                }
+                for segment_record in segment_records
+            ]
+
+            # 批量添加向量到 Chroma
+            try:
+                await vector_store.add_embeddings(
+                    ids=ids_batch,
+                    embeddings=embeddings_batch,
+                    documents=documents_batch,
+                    metadatas=metadatas_batch
+                )
+                logger.info(f"Added {len(ids_batch)} embeddings to vector store")
+            except Exception as e:
+                logger.error(f"Error adding embeddings to vector store: {str(e)}")
+                raise
+
             return document
-            
+
         except Exception as e:
             logger.error(f"Error processing document: {str(e)}")
-            if document:
-                document.status = "failed"
-                document.error = str(e)
-                await self.db.commit()
             raise
 
     def _split_text(self, text: str, max_length: int = 1000) -> List[str]:

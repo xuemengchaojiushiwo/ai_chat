@@ -1,7 +1,10 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, LargeBinary
-from sqlalchemy.orm import relationship
 from datetime import datetime
+
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float
+from sqlalchemy.orm import relationship
+
 from ..database import Base
+
 
 class Document(Base):
     __tablename__ = "documents"
@@ -58,6 +61,13 @@ class DocumentSegment(Base):
     status = Column(String(50), default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    
+    # PDF位置信息
+    page_number = Column(Integer, nullable=True)  # PDF页码
+    bbox_x = Column(Float, nullable=True)  # 边界框x坐标
+    bbox_y = Column(Float, nullable=True)  # 边界框y坐标
+    bbox_width = Column(Float, nullable=True)  # 边界框宽度
+    bbox_height = Column(Float, nullable=True)  # 边界框高度
 
     # 关系
     document = relationship(

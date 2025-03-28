@@ -106,6 +106,39 @@ class EmbeddingFactory:
         
         return float(np.dot(emb1_normalized, emb2_normalized))
 
+    @staticmethod
+    async def get_embeddings_batch(texts: List[str], model: str = None, batch_size: int = 20) -> List[np.ndarray]:
+        """
+        批量获取文本的embedding向量
+        
+        Args:
+            texts: 文本列表
+            model: 模型名称，如果为None则使用配置中的默认模型
+            batch_size: 每批处理的文本数量
+            
+        Returns:
+            embedding向量列表
+        """
+        if not model:
+            model = settings.EMBEDDING_MODEL
+            
+        # 为 BAAI/bge-m3 模型添加特殊前缀
+        if "bge" in model.lower():
+            texts = [f"为这段文字生成表示: {text}" for text in texts]
+        
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            try:
+                batch_embeddings = await EmbeddingFactory.get_embeddings(batch_texts, model)
+                all_embeddings.extend(batch_embeddings)
+                logger.info(f"Generated embeddings for batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
+            except Exception as e:
+                logger.error(f"Error generating embeddings for batch {i//batch_size + 1}: {str(e)}")
+                raise
+        
+        return all_embeddings
+
 async def get_embeddings(text: str, model: str = None, max_retries: int = 3) -> Optional[List[float]]:
     """获取文本的向量表示"""
     if not model:

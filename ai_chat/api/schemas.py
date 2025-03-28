@@ -3,20 +3,32 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 class Citation(BaseModel):
-    """引用模型"""
-    text: str = Field(description="引用的文本内容")
-    document_id: int = Field(description="文档ID")
-    segment_id: int = Field(description="文档片段ID")
-    index: int = Field(default=1, description="引用序号")
+    """引用文档片段模型"""
+    text: str
+    document_id: str
+    segment_id: str
+    similarity: float
+    index: int
+    page_number: Optional[int] = None  # PDF页码
+    bbox_x: Optional[float] = None  # 边界框x坐标
+    bbox_y: Optional[float] = None  # 边界框y坐标
+    bbox_width: Optional[float] = None  # 边界框宽度
+    bbox_height: Optional[float] = None  # 边界框高度
 
     class Config:
         from_attributes = True
         json_schema_extra = {
             "example": {
                 "text": "这是一段引用文本",
-                "document_id": 1,
-                "segment_id": 1,
-                "index": 1
+                "document_id": "1",
+                "segment_id": "1",
+                "similarity": 0.8,
+                "index": 1,
+                "page_number": 1,
+                "bbox_x": 100.0,
+                "bbox_y": 200.0,
+                "bbox_width": 100.0,
+                "bbox_height": 100.0
             }
         }
 

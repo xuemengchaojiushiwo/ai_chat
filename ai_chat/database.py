@@ -1,10 +1,51 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from .config import settings
 import os
+import pymysql
+import logging
+
+logger = logging.getLogger(__name__)
+
+def create_database():
+    """创建数据库如果不存在"""
+    try:
+        # 解析数据库URL
+        db_parts = settings.DATABASE_URL.replace('mysql+pymysql://', '').split('/')
+        db_name = db_parts[1].split('?')[0]  # 获取数据库名称
+        db_url_without_name = db_parts[0]  # 获取不带数据库名的连接URL
+
+        # 创建到MySQL服务器的连接（不指定数据库）
+        connection = pymysql.connect(
+            host=settings.MYSQL_HOST,
+            user=settings.MYSQL_USER,
+            password=settings.MYSQL_PASSWORD,
+            charset='utf8mb4'
+        )
+
+        try:
+            with connection.cursor() as cursor:
+                # 检查数据库是否存在
+                cursor.execute(f"SHOW DATABASES LIKE '{db_name}'")
+                result = cursor.fetchone()
+                
+                if not result:
+                    # 创建数据库
+                    cursor.execute(f"CREATE DATABASE {db_name} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                    logger.info(f"Database {db_name} created successfully")
+                else:
+                    logger.info(f"Database {db_name} already exists")
+                
+                connection.commit()
+        finally:
+            connection.close()
+            
+    except Exception as e:
+        logger.error(f"Error creating database: {str(e)}")
+        raise
 
 # Create async engine for MySQL with connection pool settings
 async_engine = create_async_engine(
@@ -91,13 +132,22 @@ def get_sync_db():
 
 # 初始化数据库
 async def init_db():
-    # Create tables using sync engine
-    Base.metadata.create_all(bind=engine)
-    
-    # Initialize Chroma collection
-    get_or_create_collection()
-    
-    return True
+    try:
+        # 首先创建数据库（如果不存在）
+        create_database()
+        
+        # 创建表
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created successfully")
+        
+        # 初始化 Chroma collection
+        get_or_create_collection()
+        logger.info("Chroma collection initialized")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+        raise
 
 # 删除数据库表
 async def drop_db():

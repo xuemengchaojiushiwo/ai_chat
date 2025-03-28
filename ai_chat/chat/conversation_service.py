@@ -3,15 +3,18 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import Session
+import json
+import logging
 
 # SQLAlchemy models
 from ..models.dataset import Conversation as DBConversation, Message
+from ..models.document import DocumentSegment
 
 # Pydantic models
 from ..models.types import (
-    ConversationCreate, 
-    MessageCreate, 
-    ConversationResponse, 
+    ConversationCreate,
+    MessageCreate,
+    ConversationResponse,
     MessageResponse,
     Conversation as ConversationModel
 )
@@ -22,8 +25,6 @@ from .prompt_builder import PromptBuilder
 import aiohttp
 from ..config import settings
 import httpx
-import json
-import logging
 from contextlib import asynccontextmanager
 from .llm_factory import LLMFactory
 
@@ -137,7 +138,12 @@ class ConversationService:
                     "document_id": doc.get('document_id', ''),
                     "segment_id": doc.get('segment_id', ''),
                     "similarity": doc.get('similarity', 0),
-                    "index": i + 1
+                    "index": i + 1,
+                    "page_number": doc.get('page_number'),
+                    "bbox_x": doc.get('bbox_x'),
+                    "bbox_y": doc.get('bbox_y'),
+                    "bbox_width": doc.get('bbox_width'),
+                    "bbox_height": doc.get('bbox_height')
                 }
                 for i, doc in enumerate(relevant_docs)
                 if doc.get('similarity', 0) > self.default_retrieval_config.score_threshold
@@ -213,12 +219,42 @@ AI：{ai_response}
 
     async def get_messages(self, conversation_id: int) -> List[Message]:
         """获取对话消息历史"""
-        result = await self.db.execute(
-            select(Message)
-            .filter(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at)
-        )
-        return result.scalars().all()
+        try:
+            result = await self.db.execute(
+                select(Message)
+                .filter(Message.conversation_id == conversation_id)
+                .order_by(Message.created_at)
+            )
+            messages = result.scalars().all()
+
+            # 处理每条消息的引用信息
+            for message in messages:
+                if message.citations:
+                    # 确保 citations 是列表
+                    if isinstance(message.citations, str):
+                        message.citations = json.loads(message.citations)
+                    
+                    # 查询每个引用的文档片段位置信息
+                    for citation in message.citations:
+                        if 'segment_id' in citation:
+                            segment_result = await self.db.execute(
+                                select(DocumentSegment)
+                                .filter(DocumentSegment.id == citation['segment_id'])
+                            )
+                            segment = segment_result.scalar_one_or_none()
+                            if segment:
+                                citation.update({
+                                    'page_number': segment.page_number,
+                                    'bbox_x': segment.bbox_x,
+                                    'bbox_y': segment.bbox_y,
+                                    'bbox_width': segment.bbox_width,
+                                    'bbox_height': segment.bbox_height
+                                })
+
+            return messages
+        except Exception as e:
+            logger.error(f"Error getting messages: {str(e)}")
+            raise
 
     async def process_retrieved_documents(self, docs: List[Dict], query: str) -> List[Dict]:
         """处理检索到的文档,计算相似度分数"""
@@ -319,13 +355,14 @@ AI：{ai_response}
             system_prompt = self._build_system_prompt(relevant_docs)
 
             # 获取对话历史
-            history = await self.get_messages(conversation_id)
+            history_result = await self.get_messages(conversation_id)
+            history = [(msg["role"], msg["content"]) for msg in history_result[-5:]]
             
             # 调用 LLM
             llm = LLMFactory.create_llm()
             response = await llm.chat(
                 system=system_prompt,
-                history=[(msg.role, msg.content) for msg in history[-5:]],
+                history=history,
                 message=message_content
             )
 
@@ -336,7 +373,12 @@ AI：{ai_response}
                     "document_id": doc.get('document_id', ''),
                     "segment_id": doc.get('segment_id', ''),
                     "similarity": doc.get('similarity', 0),
-                    "index": i + 1
+                    "index": i + 1,
+                    "page_number": doc.get('page_number'),
+                    "bbox_x": doc.get('bbox_x'),
+                    "bbox_y": doc.get('bbox_y'),
+                    "bbox_width": doc.get('bbox_width'),
+                    "bbox_height": doc.get('bbox_height')
                 }
                 for i, doc in enumerate(relevant_docs)
                 if doc.get('similarity', 0) > self.default_retrieval_config.score_threshold

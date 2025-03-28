@@ -159,7 +159,12 @@ class Retriever:
                                 'document_id': segment.document_id,
                                 'content': segment.content,
                                 'similarity': float(similarity),
-                                'document_name': document.name
+                                'document_name': document.name,
+                                'page_number': segment.page_number,
+                                'bbox_x': segment.bbox_x,
+                                'bbox_y': segment.bbox_y,
+                                'bbox_width': segment.bbox_width,
+                                'bbox_height': segment.bbox_height
                             })
 
             # 5. 按相似度降序排序
