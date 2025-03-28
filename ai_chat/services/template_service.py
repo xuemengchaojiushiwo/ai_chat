@@ -161,10 +161,69 @@ class TemplateService:
             raise ValueError("Template not found")
             
         try:
-            # 替换变量
-            content = template_data["prompt_template"]
+            # 获取模板变量定义
+            variables = template_data["variables"]
+            var_definitions = {var["name"]: var["description"] for var in variables}
+            
+            # 构建包含所有变量的优化提示词
+            variables_info = []
             for var_name, var_value in template_use.variable_values.items():
-                content = content.replace(f"{{{var_name}}}", var_value)
+                if var_name in var_definitions:
+                    variables_info.append(f"""变量名：{var_name}
+描述：{var_definitions[var_name]}
+当前值：{var_value}
+---""")
+            
+            if variables_info:
+                prompt = f"""请优化以下模板变量的值。对于每个变量，根据其描述优化用户输入的内容。
+
+{chr(10).join(variables_info)}
+
+要求：
+1. 保持原意的同时，使表达更加专业、准确
+2. 改正可能存在的语法错误
+3. 优化语言表达，使其更加流畅
+4. 如果是数字，保持原有格式
+5. 如果是日期，统一格式为 YYYY-MM-DD
+6. 如果内容合适，无需修改，直接返回原文
+
+请按以下JSON格式返回优化结果（不要添加任何其他内容）：
+{{
+    "变量名1": "优化后的值1",
+    "变量名2": "优化后的值2",
+    ...
+}}"""
+
+                # 调用 LLM 优化所有变量值
+                response = await self.llm_service.chat(
+                    system="你是一个文本优化助手。请直接返回JSON格式的优化结果，不要添加任何解释或其他内容。",
+                    history=[],
+                    message=prompt
+                )
+                
+                try:
+                    # 解析优化后的值
+                    optimized_values = json.loads(response.strip())
+                except json.JSONDecodeError:
+                    # 如果解析失败，尝试提取 JSON 部分
+                    start = response.find('{')
+                    end = response.rfind('}')
+                    if start != -1 and end != -1:
+                        try:
+                            optimized_values = json.loads(response[start:end+1])
+                        except json.JSONDecodeError:
+                            # 如果还是失败，使用原始值
+                            optimized_values = template_use.variable_values
+                    else:
+                        optimized_values = template_use.variable_values
+            else:
+                optimized_values = template_use.variable_values
+                
+            # 使用优化后的变量值替换模板内容
+            content = template_data["prompt_template"]
+            for var_name, var_value in optimized_values.items():
+                if var_name in var_definitions:  # 只替换定义过的变量
+                    content = content.replace(f"{{{var_name}}}", var_value)
                 
             # 更新使用次数
             query = select(Template).where(Template.id == template_id)
@@ -178,7 +237,8 @@ class TemplateService:
             return {
                 "id": 0,  # 这里应该是使用记录的ID
                 "template_id": template_id,
-                "variable_values": template_use.variable_values,
+                "variable_values": optimized_values,  # 返回优化后的变量值
+                "original_values": template_use.variable_values,  # 保留原始值
                 "generated_content": content,
                 "created_at": datetime.utcnow()
             }
