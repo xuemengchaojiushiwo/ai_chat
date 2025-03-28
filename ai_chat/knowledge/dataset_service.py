@@ -6,6 +6,7 @@ from ..models.document import Document as DBDocument, DocumentSegment as DBDocum
 from ..utils.file_processor import process_file
 from ..utils.text_splitter import split_text
 from ..utils.embeddings import EmbeddingFactory
+from ..services.vector_store import vector_store
 import asyncio
 import chardet
 import logging
@@ -219,73 +220,104 @@ class DatasetService:
             segments = self._split_text(content)
             logger.info(f"Split text into {len(segments)} segments")
             
-            for i, segment_text in enumerate(segments, 1):
+            for i, segment_content in enumerate(segments, 1):
                 try:
                     logger.info(f"Processing segment {i}/{len(segments)}")
-                    # 生成向量表示
-                    embedding = await self.embedding_factory.get_embeddings(segment_text)
-                    logger.info(f"Raw embedding type: {type(embedding)}")
+                    # 获取embedding
+                    embeddings = await self.embedding_factory.get_embeddings(segment_content)
+                    logger.info(f"Raw embedding type: {type(embeddings)}")
                     
-                    # 转换所有numpy类型为Python原生类型
-                    embedding = self._convert_to_native_types(embedding)
-                    logger.info(f"Converted embedding type: {type(embedding)}, length: {len(embedding) if embedding else 0}")
+                    # 转换embedding为原生Python类型并确保正确的格式
+                    embeddings = self._convert_to_native_types(embeddings)
+                    # 确保是一维列表
+                    if isinstance(embeddings, list) and isinstance(embeddings[0], list) and isinstance(embeddings[0][0], list):
+                        embeddings = embeddings[0][0]  # 取出内层列表
+                    elif isinstance(embeddings, list) and isinstance(embeddings[0], list):
+                        embeddings = embeddings[0]  # 取出内层列表
                     
-                    if not embedding:
-                        raise ValueError("Empty embedding generated")
-                    
-                    # 尝试序列化以验证
+                    logger.info(f"Converted embedding type: {type(embeddings)}, length: {len(embeddings)}")
+                    logger.info(f"Embedding format check - is list: {isinstance(embeddings, list)}")
+                    logger.info(f"First few values: {embeddings[:5]}")
+
+                    # 生成唯一的chroma_id
+                    chroma_id = f"{document.id}_{i}"
+
+                    # 将embedding存储到Chroma
                     try:
-                        embedding_json = json.dumps(embedding)
-                        logger.info("Successfully serialized embedding to JSON")
-                    except TypeError as e:
-                        logger.error(f"JSON serialization failed: {str(e)}")
-                        logger.error(f"Problematic embedding: {embedding[:10]}...")  # 只打印前10个元素
-                        raise
-                        
-                    # 创建段落记录
-                    segment_data = {
-                        'dataset_id': dataset_id,
-                        'document_id': document.id,
-                        'content': segment_text,
-                        'embedding': embedding_json,
-                        'position': i,
-                        'word_count': len(segment_text.split()),
-                        'tokens': len(segment_text.split()),
-                        'status': "completed",
-                        'created_at': datetime.now()
-                    }
-                    
-                    # 使用 Pydantic 模型验证数据
-                    segment_create = DocumentSegmentCreate(
-                        document_id=document.id,
-                        content=segment_text,
-                        embedding=embedding_json,
-                        created_at=datetime.now()
-                    )
-                    
-                    # 创建 SQLAlchemy 模型实例
-                    db_segment = DBDocumentSegment(**segment_data)  # 使用正确的模型类
-                    self.db.add(db_segment)
-                    await self.db.commit()  # 提交事务
-                    logger.info(f"Created segment {i} with {len(segment_text)} characters and embedding length {len(embedding)}")
+                        await vector_store.add_embeddings(
+                            ids=[chroma_id],
+                            embeddings=[embeddings],  # 现在应该是正确的格式
+                            documents=[segment_content],
+                            metadatas=[{
+                                "document_id": str(document.id),
+                                "segment_id": i,
+                                "segment_position": i,
+                                "document_name": document.name
+                            }]
+                        )
+                        logger.info(f"Successfully added embedding to Chroma for segment {i}")
+
+                        # 创建文档段落记录
+                        segment = DBDocumentSegment(
+                            document_id=document.id,
+                            content=segment_content,
+                            chroma_id=chroma_id,
+                            position=i,
+                            word_count=len(segment_content.split()),
+                            tokens=len(segment_content),
+                            status="completed",
+                            dataset_id=dataset.id
+                        )
+                        self.db.add(segment)
+                        logger.info(f"Created document segment record for segment {i}")
+
+                    except Exception as e:
+                        logger.error(f"Error adding embedding to Chroma for segment {i}: {str(e)}")
+                        logger.error(f"Embedding shape: {len(embeddings) if embeddings else 'None'}")
+                        logger.error(f"Document ID: {document.id}, Segment position: {i}")
+                        logger.error(f"Full error details:", exc_info=True)
+                        # 创建失败状态的段落记录
+                        segment = DBDocumentSegment(
+                            document_id=document.id,
+                            content=segment_content,
+                            position=i,
+                            word_count=len(segment_content.split()),
+                            tokens=len(segment_content),
+                            status="failed",
+                            dataset_id=dataset.id
+                        )
+                        self.db.add(segment)
+                        await self.db.commit()  # 立即提交以避免后续错误影响
+                        logger.info(f"Created failed document segment record for segment {i}")
+
                 except Exception as e:
-                    logger.error(f"Error processing segment {i}: {str(e)}, type: {type(e)}")
-                    logger.error(f"Embedding type: {type(embedding) if 'embedding' in locals() else 'Not generated'}")
-                    continue
+                    logger.error(f"Error processing segment {i}: {str(e)}")
+                    logger.error(f"Full error details:", exc_info=True)
+                    # 创建失败状态的段落记录
+                    segment = DBDocumentSegment(
+                        document_id=document.id,
+                        content=segment_content,
+                        position=i,
+                        word_count=len(segment_content.split()),
+                        tokens=len(segment_content),
+                        status="failed",
+                        dataset_id=dataset.id
+                    )
+                    self.db.add(segment)
+                    await self.db.commit()  # 立即提交以避免后续错误影响
+                    logger.info(f"Created failed document segment record for segment {i}")
 
             # 更新文档状态
-            document.status = 'completed'
+            document.status = "completed"
             await self.db.commit()
-            await self.db.refresh(document)
             logger.info(f"Document processing completed. ID: {document.id}")
-
+            
             return document
-
+            
         except Exception as e:
-            await self.db.rollback()
             logger.error(f"Error processing document: {str(e)}")
-            if 'document' in locals():
-                document.status = 'error'
+            if document:
+                document.status = "failed"
                 document.error = str(e)
                 await self.db.commit()
             raise

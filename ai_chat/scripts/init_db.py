@@ -1,108 +1,80 @@
-import sys
 import os
+import sys
+from pathlib import Path
 
-# Add the project root directory to the Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+# 添加项目根目录到Python路径
+project_root = Path(__file__).parent.parent.parent
+sys.path.append(str(project_root))
 
-from datetime import datetime
-import json
-from ai_chat.database import SessionLocal, Base, engine
+from sqlalchemy import create_engine, text
+from ai_chat.config import settings
+from ai_chat.database import Base
 from ai_chat.models.workspace import Workgroup, Workspace
-from ai_chat.models.dataset import Dataset
-from ai_chat.models.document import Document, DocumentSegment, DocumentWorkspace
-from sqlalchemy import text, inspect
+from ai_chat.models.document import Document, DocumentWorkspace, DocumentSegment
+from ai_chat.models.dataset import Dataset, Conversation, Message
+import logging
+
+logger = logging.getLogger(__name__)
 
 def init_db():
-    db = SessionLocal()
+    """初始化数据库"""
     try:
-        # Drop all tables
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        for table in tables:
-            db.execute(text(f'DROP TABLE IF EXISTS {table}'))
-        db.commit()
-
-        # Create all tables
-        Base.metadata.create_all(bind=engine)
-
-        # Create default workgroup
-        workgroup = Workgroup(
-            name="default",
-            description="Default workgroup",
-            created_at=datetime.utcnow()
+        # 创建数据库引擎
+        root_engine = create_engine(
+            settings.DATABASE_URL.replace('/ai_chat', ''),
+            echo=True
         )
-        db.add(workgroup)
-        db.flush()  # Flush to get the workgroup ID
-
-        # Create default workspace
-        workspace = Workspace(
-            name="default",
-            description="Default workspace",
-            group_id=workgroup.id,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
-        db.add(workspace)
-        db.flush()  # Flush to get the workspace ID
-
-        # Create default dataset
-        dataset = Dataset(
-            name="default",
-            description="Default dataset",
-            created_at=datetime.utcnow()
-        )
-        db.add(dataset)
-        db.flush()  # Flush to get the dataset ID
-
-        # Create example document
-        document = Document(
-            name="example.txt",
-            description="测试文档",
-            file_type="text/plain",
-            mime_type="text/plain",
-            size=1024,
-            content="本项目使用了以下技术栈：\n1. 后端：Python FastAPI框架\n2. 数据库：SQLite + SQLAlchemy ORM\n3. 异步处理：使用Python asyncio\n4. API文档：Swagger/OpenAPI\n5. 向量检索：基于embedding的相似度搜索",
-            status="completed",
-            dataset_id=dataset.id,
-            created_at=datetime.utcnow()
-        )
-        db.add(document)
-        db.flush()  # Flush to get the document ID
-
-        # Create document workspace association
-        doc_workspace = DocumentWorkspace(
-            document_id=document.id,
-            workspace_id=workspace.id,
-            created_at=datetime.utcnow()
-        )
-        db.add(doc_workspace)
-
-        # Create document segments with example embedding
-        example_embedding = [0.1] * 1024  # Create a 1024-dimensional embedding
-        segment = DocumentSegment(
-            document_id=document.id,
-            content="本项目使用了以下技术栈：\n1. 后端：Python FastAPI框架\n2. 数据库：SQLite + SQLAlchemy ORM\n3. 异步处理：使用Python asyncio\n4. API文档：Swagger/OpenAPI\n5. 向量检索：基于embedding的相似度搜索",
-            embedding=json.dumps(example_embedding),  # Store embedding as JSON string
-            position=0,
-            word_count=50,
-            tokens=100,
-            status="completed",
-            created_at=datetime.utcnow(),
-            dataset_id=dataset.id
-        )
-        db.add(segment)
-
-        # Commit all changes
-        db.commit()
-        print("Database initialized successfully!")
-
+        
+        # 尝试删除并重新创建数据库
+        with root_engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS ai_chat"))
+            conn.execute(text("CREATE DATABASE ai_chat CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
+            logger.info("Database recreated successfully")
+        
+        # 重新连接到新创建的数据库
+        engine = create_engine(settings.DATABASE_URL, echo=True)
+        
+        # 创建所有表
+        Base.metadata.create_all(engine)
+        logger.info("Tables created successfully")
+        
+        # 创建默认数据
+        with engine.connect() as conn:
+            # 创建默认工作组
+            conn.execute(text("""
+                INSERT INTO workgroups (name, description, created_at)
+                VALUES ('default', 'Default workgroup', NOW())
+            """))
+            
+            # 创建默认工作空间
+            conn.execute(text("""
+                INSERT INTO workspaces (name, description, group_id, created_at, updated_at)
+                VALUES ('default', 'Default workspace', 1, NOW(), NOW())
+            """))
+            
+            # 创建默认数据集
+            conn.execute(text("""
+                INSERT INTO datasets (name, description, created_at)
+                VALUES ('default', 'Default dataset', NOW())
+            """))
+            
+            conn.commit()
+            logger.info("Default data created successfully")
+        
+        return True
     except Exception as e:
-        print(f"Error initializing database: {e}")
-        db.rollback()
-        raise
-    finally:
-        db.close()
+        logger.error(f"Error initializing database: {str(e)}")
+        return False
 
 if __name__ == "__main__":
-    init_db() 
+    # 配置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # 初始化数据库
+    if init_db():
+        print("Database initialized successfully!")
+    else:
+        print("Error initializing database!") 

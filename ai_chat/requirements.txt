@@ -61,4 +61,9 @@ prometheus-client>=0.19.0  # 监控指标
 APScheduler>=3.10.0  # 定时任务
 python-slugify>=8.0.0  # URL 友好的字符串
 Pillow>=10.0.0  # 图像处理
-python-magic-bin>=0.4.14; platform_system == "Windows"  # Windows 系统的 magic 支持 
+python-magic-bin>=0.4.14; platform_system == "Windows"  # Windows 系统的 magic 支持
+# Database
+pymysql>=1.1.0  # MySQL同步支持
+aiomysql>=0.2.0  # MySQL异步支持
+cryptography>=41.0.0  # MySQL加密支持
+chromadb>=0.4.22  # Chroma向量数据库 

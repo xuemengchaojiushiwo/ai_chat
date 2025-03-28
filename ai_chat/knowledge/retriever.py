@@ -6,6 +6,7 @@ import numpy as np
 import logging
 import json
 from sklearn.metrics.pairwise import cosine_similarity
+from ..services.vector_store import vector_store
 
 # SQLAlchemy models - 只保留一个 DocumentSegment 导入
 from ..models.document import Document, DocumentSegment, DocumentWorkspace
@@ -94,80 +95,81 @@ class Retriever:
             query_embedding = await self.embedding_factory.get_embeddings(query)
             if not isinstance(query_embedding, np.ndarray):
                 query_embedding = np.array(query_embedding)
-            query_embedding = query_embedding.flatten()
-            self.logger.info(f"Query embedding shape: {query_embedding.shape}")
+            query_embedding = query_embedding.flatten().tolist()  # 转换为列表
+            self.logger.info(f"Generated query embedding")
 
-            # 2. 获取所有文档片段
-            stmt = select(DocumentSegment).join(Document)
+            # 2. 构建Chroma查询条件
+            where_filter = None
             if workspace_id:
-                # 添加工作空间过滤条件
-                self.logger.info(f"Searching in workspace: {workspace_id}")
+                # 获取工作空间关联的文档ID
                 stmt = (
-                    stmt
-                    .join(DocumentWorkspace)
+                    select(DocumentWorkspace.document_id)
                     .filter(DocumentWorkspace.workspace_id == workspace_id)
                 )
-            result = await self.db.execute(stmt)
-            segments = result.scalars().all()
-            self.logger.info(f"Found {len(segments)} total segments")
+                result = await self.db.execute(stmt)
+                document_ids = [str(doc_id) for doc_id, in result.fetchall()]
+                
+                if document_ids:
+                    # 直接使用document_id作为过滤条件
+                    where_filter = {"document_id": {"$in": document_ids}}
+                    self.logger.info(f"Searching in workspace {workspace_id} with documents: {document_ids}")
+                    self.logger.debug(f"Using filter: {where_filter}")
 
-            # 3. 计算相似度并排序
+            # 3. 使用Chroma进行向量检索
+            try:
+                results = await vector_store.query_similar(
+                    query_embedding=query_embedding,
+                    n_results=limit,
+                    where=where_filter
+                )
+                self.logger.info(f"Chroma search completed")
+            except Exception as e:
+                self.logger.error(f"Chroma search error: {str(e)}")
+                return []
+
+            # 4. 处理检索结果
             similarities = []
-            for segment in segments:
-                try:
-                    if not segment.embedding:
-                        self.logger.warning(f"Segment {segment.id} has no embedding")
-                        continue
+            if results and results.get("ids") and results["ids"][0]:
+                for i, (doc_id, distance, metadata) in enumerate(zip(
+                    results["ids"][0],
+                    results["distances"][0],
+                    results["metadatas"][0]
+                )):
+                    # 将距离转换为相似度分数
+                    similarity = 1 / (1 + distance)  # 简单的距离到相似度的转换
                     
-                    # 将字符串转换为numpy数组
-                    segment_embedding = np.array(json.loads(segment.embedding))
-                    if not isinstance(segment_embedding, np.ndarray):
-                        segment_embedding = np.array(segment_embedding)
-                    segment_embedding = segment_embedding.flatten()
-
-                    # 确保向量维度匹配
-                    if query_embedding.shape != segment_embedding.shape:
-                        self.logger.warning(f"Shape mismatch: query {query_embedding.shape} vs segment {segment_embedding.shape}")
-                        continue
-
-                    # 计算余弦相似度
-                    similarity = cosine_similarity(
-                        query_embedding.reshape(1, -1),
-                        segment_embedding.reshape(1, -1)
-                    )[0][0]
-
-                    # 获取文档信息
-                    document_result = await self.db.execute(
-                        select(Document).filter(Document.id == segment.document_id)
+                    # 获取文档段落信息
+                    segment_result = await self.db.execute(
+                        select(DocumentSegment)
+                        .filter(DocumentSegment.chroma_id == doc_id)
                     )
-                    document = document_result.scalar_one_or_none()
-                    if not document:
-                        self.logger.warning(f"Document not found for segment {segment.id}")
-                        continue
+                    segment = segment_result.scalar_one_or_none()
+                    
+                    if segment:
+                        # 获取文档信息
+                        document_result = await self.db.execute(
+                            select(Document).filter(Document.id == segment.document_id)
+                        )
+                        document = document_result.scalar_one_or_none()
+                        
+                        if document:
+                            self.logger.info(f"Found matching segment {segment.id} from document {document.name}")
+                            similarities.append({
+                                'segment_id': segment.id,
+                                'document_id': segment.document_id,
+                                'content': segment.content,
+                                'similarity': float(similarity),
+                                'document_name': document.name
+                            })
 
-                    self.logger.info(f"Segment {segment.id} from {document.name}: similarity = {similarity:.4f}")
-                    self.logger.info(f"Content preview: {segment.content[:100]}...")
-
-                    similarities.append({
-                        'segment_id': segment.id,
-                        'document_id': segment.document_id,
-                        'content': segment.content,
-                        'similarity': float(similarity),
-                        'document_name': document.name
-                    })
-
-                except Exception as e:
-                    self.logger.error(f"Error processing segment {segment.id}: {str(e)}")
-                    continue
-
-            # 4. 按相似度降序排序并返回前N个结果
+            # 5. 按相似度降序排序
             similarities.sort(key=lambda x: x['similarity'], reverse=True)
             
-            # 记录最终选择的结果
-            self.logger.info("Selected segments:")
+            # 记录检索结果
+            self.logger.info(f"Found {len(similarities)} relevant segments")
             for sim in similarities[:limit]:
                 self.logger.info(f"Document: {sim['document_name']}, Similarity: {sim['similarity']:.4f}")
-                self.logger.info(f"Content: {sim['content'][:100]}...")
+                self.logger.info(f"Content preview: {sim['content'][:100]}...")
 
             return similarities[:limit]
 

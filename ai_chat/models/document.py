@@ -51,7 +51,7 @@ class DocumentSegment(Base):
     id = Column(Integer, primary_key=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"))
     content = Column(Text, nullable=False)
-    embedding = Column(Text)
+    chroma_id = Column(String(255), unique=True)  # 添加chroma_id字段
     position = Column(Integer)
     word_count = Column(Integer)
     tokens = Column(Integer)

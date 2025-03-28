@@ -2,8 +2,17 @@ import os
 from typing import Optional
 from pydantic_settings import BaseSettings
 
-# 数据库配置
-DATABASE_URL = "sqlite:///./ai_chat.db"
+# MySQL数据库配置
+MYSQL_USER = "root"
+MYSQL_PASSWORD = "xmc131455"
+MYSQL_HOST = "localhost"
+MYSQL_PORT = "3306"
+MYSQL_DATABASE = "ai_chat"
+DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4&use_unicode=1&local_infile=1"
+
+# Chroma配置
+CHROMA_PERSIST_DIRECTORY = "./chroma_db"
+COLLECTION_NAME = "document_embeddings"
 
 # Silicon Flow API 配置
 SF_API_KEY = "sk-jncftpdfzxaffluqbhswlnkureqgxnctjlbyrvelhwrvwxli"  # 恢复原来的格式
@@ -12,7 +21,7 @@ SF_EMBEDDING_URL = f"{SF_API_BASE}/embeddings"
 SF_CHAT_URL = f"{SF_API_BASE}/chat/completions"
 
 # 模型配置
-CHAT_MODEL = "Qwen/QwQ-32B"
+CHAT_MODEL = "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
 EMBEDDING_MODEL = "BAAI/bge-m3"
 
 # 向量搜索配置
@@ -26,6 +35,15 @@ OPENAI_API_BASE = "https://api.openai.com"
 class Settings(BaseSettings):
     # 数据库配置
     DATABASE_URL: str = DATABASE_URL
+    MYSQL_USER: str = MYSQL_USER
+    MYSQL_PASSWORD: str = MYSQL_PASSWORD
+    MYSQL_HOST: str = MYSQL_HOST
+    MYSQL_PORT: str = MYSQL_PORT
+    MYSQL_DATABASE: str = MYSQL_DATABASE
+    
+    # Chroma配置
+    CHROMA_PERSIST_DIRECTORY: str = CHROMA_PERSIST_DIRECTORY
+    COLLECTION_NAME: str = COLLECTION_NAME
     
     # Silicon Flow API 配置
     SF_API_KEY: str = SF_API_KEY
@@ -53,6 +71,6 @@ class Settings(BaseSettings):
 
 # 直接设置环境变量
 os.environ['SF_API_KEY'] = 'sk-jncftpdfzxaffluqbhswlnkureqgxnctjlbyrvelhwrvwxli'  # 恢复原来的格式
-os.environ['DATABASE_URL'] = 'sqlite:///./ai_chat.db'
+os.environ['DATABASE_URL'] = DATABASE_URL
 
 settings = Settings() 
