@@ -207,6 +207,32 @@ class DatasetService:
             all_embeddings = await self.embedding_factory.get_embeddings_batch(segments)
             logger.info(f"Generated embeddings for {len(segments)} segments")
 
+            # 确保所有向量都是一维列表
+            processed_embeddings = []
+            for emb in all_embeddings:
+                # 如果是numpy数组，直接转换为列表
+                if isinstance(emb, np.ndarray):
+                    processed_embeddings.append(emb.tolist())
+                # 如果是列表
+                elif isinstance(emb, list):
+                    # 如果是嵌套列表，获取内部的向量
+                    if len(emb) == 1 and isinstance(emb[0], (list, np.ndarray)):
+                        inner_emb = emb[0]
+                        if isinstance(inner_emb, np.ndarray):
+                            processed_embeddings.append(inner_emb.tolist())
+                        else:
+                            processed_embeddings.append(inner_emb)
+                    # 如果已经是一维列表，直接使用
+                    else:
+                        processed_embeddings.append(emb)
+                else:
+                    processed_embeddings.append(emb)
+            
+            all_embeddings = processed_embeddings
+            logger.info(f"Normalized {len(all_embeddings)} embeddings to 1D lists")
+            for i, emb in enumerate(all_embeddings):
+                logger.info(f"Embedding {i} type: {type(emb)}, shape: {len(emb) if isinstance(emb, list) else 'unknown'}")
+
             # 准备批量插入的数据
             segment_records = []
             embeddings_batch = []
@@ -214,7 +240,11 @@ class DatasetService:
             documents_batch = []
             metadatas_batch = []
 
+            logger.info(f"Processing {len(segments)} segments with {len(all_embeddings)} embeddings")
+            
             for i, (segment, embedding) in enumerate(zip(segments, all_embeddings)):
+                logger.info(f"Processing segment {i}: length={len(segment)}, embedding shape={len(embedding) if isinstance(embedding, list) else 'unknown'}")
+                
                 # 查找对应的文本块位置信息
                 block_info = None
                 if text_blocks:
@@ -226,6 +256,7 @@ class DatasetService:
 
                 # 生成唯一的 chroma_id
                 chroma_id = f"doc_{document.id}_seg_{i}"
+                logger.info(f"Generated chroma_id: {chroma_id}")
 
                 # 创建文档片段记录
                 segment_record = DBDocumentSegment(
@@ -242,16 +273,12 @@ class DatasetService:
                     chroma_id=chroma_id
                 )
                 segment_records.append(segment_record)
-
-                # 确保 embedding 是一维列表
-                if isinstance(embedding, np.ndarray):
-                    embedding = embedding.flatten().tolist()
-                elif isinstance(embedding, list) and len(embedding) == 1 and isinstance(embedding[0], np.ndarray):
-                    embedding = embedding[0].flatten().tolist()
-
                 embeddings_batch.append(embedding)
                 ids_batch.append(chroma_id)
                 documents_batch.append(segment)
+
+            logger.info(f"Created {len(segment_records)} segment records")
+            logger.info(f"Prepared {len(embeddings_batch)} embeddings, {len(ids_batch)} IDs, and {len(documents_batch)} documents for Chroma")
 
             # 批量保存文档片段
             self.db.add_all(segment_records)

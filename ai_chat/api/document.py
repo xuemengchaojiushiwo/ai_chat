@@ -16,6 +16,9 @@ from ..models.dataset import Dataset as DBDataset
 import logging
 from ..models.types import Document as DocumentSchema
 import io
+import numpy as np
+from ..utils.embeddings import EmbeddingFactory, get_embedding
+from ..services.vector_store import vector_store
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -68,6 +71,10 @@ class DocumentResponse(DocumentBase):
 
     class Config:
         from_attributes = True
+
+class ResetResponse(BaseModel):
+    status: str
+    message: str
 
 def format_size(size_in_bytes: int) -> str:
     """将字节大小转换为人类可读的格式（KB或MB）"""
@@ -139,13 +146,13 @@ async def list_documents(
             DocumentSchema(
                 id=doc.id,
                 dataset_id=doc.dataset_id or 1,
-                name=doc.original_name,  # 使用原始文件名
+                name=doc.original_name or doc.name or f"未命名文档_{doc.id}",  # 使用原始文件名，如果为空则使用name字段或默认名称
                 content=doc.content,
                 mime_type=doc.mime_type,
                 status=doc.status,
                 size=format_size(doc.size) if doc.size else "0KB",
                 version=doc.version,  # 添加版本信息
-                file_hash=doc.file_hash[:8],  # 添加文件哈希前8位
+                file_hash=doc.file_hash[:8] if doc.file_hash else None,  # 添加文件哈希前8位
                 error=doc.error,
                 created_at=doc.created_at.isoformat() if doc.created_at else None,
                 creator = "admin",
@@ -282,4 +289,73 @@ async def download_document(
         
     except Exception as e:
         logger.error(f"Error downloading document: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/documents/rebuild_vectors")
+async def rebuild_vectors(db: AsyncSession = Depends(get_db)):
+    """重建所有文档的向量表示"""
+    try:
+        # 获取所有文档段
+        result = await db.execute(select(DocumentSegment))
+        segments = result.scalars().all()
+        logger.info(f"Found {len(segments)} segments to process")
+        
+        # 清空现有的向量存储
+        try:
+            vector_store.collection.delete(ids=[str(segment.id) for segment in segments])
+            logger.info("Cleared existing vectors")
+        except Exception as e:
+            logger.warning(f"Error clearing vectors: {e}")
+        
+        # 批量处理文档段
+        batch_size = 10  # 每批处理10个文档
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i:i + batch_size]
+            try:
+                # 准备批量数据
+                ids = [str(segment.id) for segment in batch]
+                texts = [segment.content for segment in batch]
+                metadatas = [{"segment_id": segment.id} for segment in batch]
+                
+                # 批量生成向量
+                embeddings = await get_embedding(texts)
+                
+                # 添加到向量存储
+                await vector_store.add_embeddings(
+                    ids=ids,
+                    embeddings=embeddings,
+                    documents=texts,
+                    metadatas=metadatas
+                )
+                logger.info(f"Processed batch of {len(batch)} segments")
+            except Exception as e:
+                logger.error(f"Error processing batch: {e}")
+                continue
+        
+        return {
+            "status": "success",
+            "message": f"Successfully rebuilt vectors for {len(segments)} segments",
+            "processed_count": len(segments)
+        }
+    except Exception as e:
+        logger.error(f"Error rebuilding vectors: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/reset", response_model=ResetResponse)
+async def reset_vector_store():
+    """重置向量存储，清空所有数据并重新初始化"""
+    try:
+        # 调用 vector_store 的重置方法
+        await vector_store.delete_embeddings(
+            ids=vector_store.collection.get()["ids"]
+        )
+        return {
+            "status": "success",
+            "message": "Vector store has been reset successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error resetting vector store: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reset vector store: {str(e)}"
+        ) 

@@ -34,7 +34,7 @@ class RetrievalConfig:
     """检索配置"""
     def __init__(self, 
                  top_k: int = 3,
-                 score_threshold: float = 0.5,
+                 score_threshold: float = settings.VECTOR_SIMILARITY_THRESHOLD,
                  reranking_enabled: bool = False):
         self.top_k = top_k
         self.score_threshold = score_threshold
@@ -257,12 +257,11 @@ AI：{ai_response}
             raise
 
     async def process_retrieved_documents(self, docs: List[Dict], query: str) -> List[Dict]:
-        """处理检索到的文档,计算相似度分数"""
+        """处理检索到的文档"""
         processed_docs = []
         for doc in docs:
-            # 计算文档相似度分数
-            score = await self._calculate_similarity(doc.get('content', ''), query)
-            doc['similarity'] = score
+            # 使用文档中已有的相似度分数
+            score = doc.get('similarity', 0)
             if score > self.default_retrieval_config.score_threshold:
                 processed_docs.append(doc)
         
@@ -271,10 +270,8 @@ AI：{ai_response}
         return processed_docs[:self.default_retrieval_config.top_k]
 
     async def _calculate_similarity(self, doc_content: str, query: str) -> float:
-        """计算文档与查询的相似度"""
-        # TODO: 实现更复杂的相似度计算,如TF-IDF或语义相似度
-        # 这里先返回一个基础分数
-        return 0.7 if doc_content and query else 0.0
+        """计算文档与查询的相似度 - 已弃用，现在使用向量检索的相似度分数"""
+        return 0.0  # 不再使用这个方法
 
     def _build_system_prompt(self, relevant_docs: List[Dict]) -> str:
         """构建系统提示"""
@@ -356,7 +353,7 @@ AI：{ai_response}
 
             # 获取对话历史
             history_result = await self.get_messages(conversation_id)
-            history = [(msg["role"], msg["content"]) for msg in history_result[-5:]]
+            history = [(msg.role, msg.content) for msg in history_result[-5:]]
             
             # 调用 LLM
             llm = LLMFactory.create_llm()

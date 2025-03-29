@@ -9,64 +9,54 @@ import time
 
 logger = logging.getLogger(__name__)
 
-class EmbeddingFactory:
-    @staticmethod
-    async def get_embeddings(texts: Union[str, List[str]], model: str = None) -> List[np.ndarray]:
-        """
-        获取文本的embedding向量，支持单条或多条文本
-        
-        Args:
-            texts: 单条文本或文本列表
-            model: 模型名称，如果为None则使用配置中的默认模型
-        
-        Returns:
-            embedding向量列表
-        """
-        if isinstance(texts, str):
-            texts = [texts]
-            
-        if not model:
-            model = settings.EMBEDDING_MODEL
-            
-        headers = {
-            "Authorization": f"Bearer {settings.SF_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        # 为 BAAI/bge-m3 模型添加特殊前缀
-        if "bge" in model.lower():
-            texts = [f"为这段文字生成表示: {text}" for text in texts]
-        
+async def get_embedding(texts: Union[str, List[str]]) -> List[List[float]]:
+    """使用 text-embedding-3-small 模型获取文本向量"""
+    # 确保输入是列表格式
+    if isinstance(texts, str):
+        texts = [texts]
+    
+    headers = {
+        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # 批量处理，每批最多20个文本
+    batch_size = 20
+    all_embeddings = []
+    
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i + batch_size]
         data = {
-            "model": model,
-            "input": texts,
-            "encoding_format": "float"
+            "model": settings.EMBEDDING_MODEL,
+            "input": batch_texts
         }
         
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    settings.SF_EMBEDDING_URL,
+                    settings.OPENAI_EMBEDDING_URL,
                     headers=headers,
-                    json=data,
-                    timeout=30
+                    json=data
                 ) as response:
                     if response.status != 200:
-                        error_detail = await response.text()
-                        logger.error(f"Embedding API error: {error_detail}")
-                        raise Exception(f"Embedding API error: {error_detail}")
-                        
+                        raise Exception(f"API error: {await response.text()}")
                     result = await response.json()
-                    
-                    # 提取所有文本的embedding
-                    embeddings = [np.array(item['embedding']) for item in result['data']]
-                    
-                    # 如果输入是单条文本，返回单个结果
-                    return embeddings[0] if isinstance(texts, str) else embeddings
-                    
+                    batch_embeddings = [item["embedding"] for item in result["data"]]
+                    all_embeddings.extend(batch_embeddings)
         except Exception as e:
-            logger.error(f"Failed to get embeddings: {str(e)}")
+            logger.error(f"Error in batch {i//batch_size}: {str(e)}")
             raise
+    
+    return all_embeddings
+
+class EmbeddingFactory:
+    def __init__(self):
+        self.model = settings.EMBEDDING_MODEL
+        logger.info(f"Initialized EmbeddingFactory with model: {self.model}")
+    
+    async def get_embeddings(self, text: Union[str, List[str]]) -> List[List[float]]:
+        """获取文本的向量表示"""
+        return await get_embedding(text)
 
     @staticmethod
     def normalize_embeddings(embeddings: Union[np.ndarray, List[np.ndarray]]) -> Union[np.ndarray, List[np.ndarray]]:
@@ -124,14 +114,36 @@ class EmbeddingFactory:
             
         # 为 BAAI/bge-m3 模型添加特殊前缀
         if "bge" in model.lower():
-            texts = [f"为这段文字生成表示: {text}" for text in texts]
+            processed_texts = []
+            for text in texts:
+                if len(text) < 20:  # 如果是短文本，可能是查询
+                    processed_text = f"查询：{text}"
+                else:  # 如果是长文本，可能是文档
+                    processed_text = f"段落：{text}"
+                processed_texts.append(processed_text)
+            texts = processed_texts
         
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i:i + batch_size]
             try:
-                batch_embeddings = await EmbeddingFactory.get_embeddings(batch_texts, model)
-                all_embeddings.extend(batch_embeddings)
+                # 直接使用 get_embedding 函数
+                embeddings = await get_embedding(batch_texts)
+                # 确保每个 embedding 是一维列表
+                for emb in embeddings:
+                    if isinstance(emb, np.ndarray):
+                        all_embeddings.append(emb.tolist())
+                    elif isinstance(emb, list):
+                        if len(emb) == 1 and isinstance(emb[0], (list, np.ndarray)):
+                            inner_emb = emb[0]
+                            if isinstance(inner_emb, np.ndarray):
+                                all_embeddings.append(inner_emb.tolist())
+                            else:
+                                all_embeddings.append(inner_emb)
+                        else:
+                            all_embeddings.append(emb)
+                    else:
+                        all_embeddings.append(emb)
                 logger.info(f"Generated embeddings for batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
             except Exception as e:
                 logger.error(f"Error generating embeddings for batch {i//batch_size + 1}: {str(e)}")
@@ -146,7 +158,10 @@ async def get_embeddings(text: str, model: str = None, max_retries: int = 3) -> 
         
     # 为 BAAI/bge-m3 模型添加特殊前缀
     if "bge" in model.lower():
-        text = f"为这段文字生成表示: {text}"
+        if len(text) < 20:  # 如果是短文本，可能是查询
+            text = f"查询：{text}"
+        else:  # 如果是长文本，可能是文档
+            text = f"段落：{text}"
     
     headers = {
         "Authorization": f"Bearer {settings.SF_API_KEY}",

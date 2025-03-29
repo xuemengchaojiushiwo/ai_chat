@@ -5,7 +5,6 @@ import numpy as np
 import os
 import logging
 from typing import List, Dict, Any, Optional
-from ..database import get_or_create_collection
 from ..utils.logger import vector_logger
 
 logger = logging.getLogger(__name__)
@@ -20,8 +19,21 @@ class VectorStore:
                 allow_reset=True
             )
         )
-        self.collection = get_or_create_collection()
-        vector_logger.info(f"VectorStore initialized with collection: {settings.COLLECTION_NAME}")
+        
+        # 尝试获取现有collection，如果不存在则创建新的
+        try:
+            self.collection = self.client.get_collection(
+                name=settings.COLLECTION_NAME,
+                embedding_function=None
+            )
+            vector_logger.info(f"Got existing collection: {settings.COLLECTION_NAME}")
+        except Exception as e:
+            vector_logger.info(f"Creating new collection: {str(e)}")
+            self.collection = self.client.create_collection(
+                name=settings.COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"}  # 使用余弦距离
+            )
+            vector_logger.info(f"Created new collection with cosine distance: {settings.COLLECTION_NAME}")
     
     async def add_embeddings(
         self,
@@ -80,20 +92,49 @@ class VectorStore:
             # 先检查集合中的所有数据
             all_data = self.collection.get()
             vector_logger.info(f"Total documents in collection: {len(all_data['ids'])}")
-            vector_logger.info(f"Sample metadata in collection: {all_data['metadatas'][:5] if all_data['metadatas'] else []}")
             
-            # 执行查询
+            # 执行查询，请求更多结果以便过滤
             results = self.collection.query(
                 query_embeddings=[query_embedding],
-                n_results=n_results,
+                n_results=min(n_results * 2, 20),  # 请求更多结果以便过滤
                 where=where,
                 include=["metadatas", "distances", "documents"]
             )
-            vector_logger.info(f"Found {len(results['ids'][0]) if results['ids'] else 0} similar documents")
-            if results['ids'] and results['ids'][0]:
-                vector_logger.info(f"First result metadata: {results['metadatas'][0][0] if results['metadatas'] else None}")
-            vector_logger.debug(f"Query results: {results}")
-            return results
+            
+            # 记录原始距离值
+            if results['distances'] and results['distances'][0]:
+                vector_logger.info(f"Raw distances from Chroma: {results['distances'][0]}")
+            
+            filtered_results = {
+                'ids': [],
+                'distances': [],
+                'metadatas': [],
+                'documents': []
+            }
+            
+            if results['metadatas'] and len(results['metadatas'][0]) > 0:
+                filtered_indices = []
+                for i, (metadata, distance) in enumerate(zip(results['metadatas'][0], results['distances'][0])):
+                    # Chroma使用cosine distance，范围是[0, 2]
+                    # cosine_similarity = 1 - (cosine_distance / 2)
+                    similarity = 1 - (distance / 2)
+                    vector_logger.info(f"Distance: {distance}, Calculated similarity: {similarity}")
+                    
+                    # 只保留相似度大于阈值的结果
+                    if similarity >= settings.SIMILARITY_THRESHOLD:
+                        filtered_indices.append(i)
+                        
+                # 如果有符合条件的结果，构建过滤后的结果字典
+                if filtered_indices:
+                    filtered_results['ids'] = [[results['ids'][0][i] for i in filtered_indices]]
+                    filtered_results['distances'] = [[results['distances'][0][i] for i in filtered_indices]]
+                    filtered_results['metadatas'] = [[results['metadatas'][0][i] for i in filtered_indices]]
+                    if results.get('documents'):
+                        filtered_results['documents'] = [[results['documents'][0][i] for i in filtered_indices]]
+                
+                vector_logger.info(f"Found {len(filtered_indices)} results above threshold {settings.SIMILARITY_THRESHOLD}")
+            
+            return filtered_results
         except Exception as e:
             vector_logger.error(f"Error querying similar documents: {str(e)}")
             raise
@@ -178,7 +219,7 @@ class ChromaService:
         except:
             self.collection = self.client.create_collection(
                 name=self.collection_name,
-                metadata={"hnsw:space": "l2"}
+                metadata={"hnsw:space": "cosine"}  # 使用余弦距离
             )
             logger.info(f"Created new collection: {self.collection_name}")
 

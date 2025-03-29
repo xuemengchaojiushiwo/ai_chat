@@ -18,7 +18,6 @@ from pydantic import BaseModel
 from ai_chat.api.workspace import router as workspace_router
 from ai_chat.api.document import router as document_router
 from .routes.templates import router as template_router
-from .vector_store import router as vector_store_router
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -263,5 +262,4 @@ async def generate_title(request: GenerateTitleRequest, db: AsyncSession = Depen
 app.include_router(workspace_router, prefix="/api/v1", tags=["工作空间管理"])
 app.include_router(document_router, prefix="/api/v1", tags=["文档管理"])
 app.include_router(router, prefix="/api/v1/chat", tags=["对话管理"])
-app.include_router(template_router)
-app.include_router(vector_store_router) 
+app.include_router(template_router) 

@@ -123,6 +123,15 @@ class Retriever:
                     where=where_filter
                 )
                 self.logger.info(f"Chroma search completed")
+                
+                # 打印原始结果
+                if results and results.get("ids") and results["ids"][0]:
+                    self.logger.info("Chroma raw results:")
+                    for i, (doc_id, distance) in enumerate(zip(results["ids"][0], results["distances"][0])):
+                        self.logger.info(f"  Document {doc_id}: distance={distance:.4f}, similarity={1-distance:.4f}")
+                else:
+                    self.logger.info("No results from Chroma")
+                    
             except Exception as e:
                 self.logger.error(f"Chroma search error: {str(e)}")
                 return []
@@ -135,8 +144,11 @@ class Retriever:
                     results["distances"][0],
                     results["metadatas"][0]
                 )):
-                    # 将距离转换为相似度分数
-                    similarity = 1 / (1 + distance)  # 简单的距离到相似度的转换
+                    # 使用Chroma返回的相似度分数
+                    # 余弦距离 = 1 - 余弦相似度
+                    # 所以余弦相似度 = 1 - 余弦距离
+                    similarity = 1 - distance
+                    self.logger.info(f"Processing result {i+1}: distance={distance:.4f}, similarity={similarity:.4f}")
                     
                     # 获取文档段落信息
                     segment_result = await self.db.execute(
@@ -153,7 +165,7 @@ class Retriever:
                         document = document_result.scalar_one_or_none()
                         
                         if document:
-                            self.logger.info(f"Found matching segment {segment.id} from document {document.name}")
+                            self.logger.info(f"Found matching segment {segment.id} from document {document.name} with similarity {similarity:.4f}")
                             similarities.append({
                                 'segment_id': segment.id,
                                 'document_id': segment.document_id,
