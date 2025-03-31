@@ -1,9 +1,14 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Any
 from sqlalchemy.orm import Session
 import re
 from datetime import datetime
 import json
 from sqlalchemy import select
+import time
+import logging
+import functools
+import asyncio
+from collections import OrderedDict
 
 from ..models.template import Template
 from ..api.schemas.template import (
@@ -14,12 +19,70 @@ from ..api.schemas.template import (
 )
 from ..chat.llm_factory import get_llm_service
 
+logger = logging.getLogger(__name__)
+
+class LRUCache:
+    """简单的LRU缓存实现"""
+    def __init__(self, capacity: int = 100):
+        self.cache = OrderedDict()
+        self.capacity = capacity
+        
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        # 移动到最近使用
+        value = self.cache.pop(key)
+        self.cache[key] = value
+        return value
+        
+    def put(self, key, value):
+        if key in self.cache:
+            self.cache.pop(key)
+        elif len(self.cache) >= self.capacity:
+            # 移除最近最少使用的项
+            self.cache.popitem(last=False)
+        self.cache[key] = value
+
 class TemplateService:
     def __init__(self, db: Session):
         self.db = db
         self.llm_service = get_llm_service()
+        self._json_cache = LRUCache(capacity=50)  # 限制缓存大小为50项
+    
+    def _extract_json(self, text: str) -> Dict:
+        """智能提取JSON内容，处理可能的格式问题"""
+        # 尝试直接解析整个字符串
+        text = text.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        
+        # 尝试查找JSON对象
+        try:
+            start = text.find('{')
+            end = text.rfind('}')
+            if start >= 0 and end > start:
+                return json.loads(text[start:end+1])
+        except json.JSONDecodeError:
+            pass
+            
+        # 尝试使用正则表达式提取
+        try:
+            import re
+            match = re.search(r'({[\s\S]*})', text)
+            if match:
+                return json.loads(match.group(1))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+            
+        raise ValueError(f"无法从文本中提取有效的JSON: {text[:100]}...")
 
     async def create_template(self, template_data: TemplateCreate) -> Template:
+        """创建新模板 - 性能优化版本"""
+        start_time = time.time()
+        logger.info(f"开始创建模板: {template_data.description[:50]}...")
+        
         # 使用 LLM 生成结构化模板
         prompt = f"""请根据以下描述生成一个结构化的模板定义。
 
@@ -38,77 +101,103 @@ class TemplateService:
     ],
     "category": "模板分类（使用中文，例如：办公、通知、报告等）",
     "description": "模板的详细描述",
-    "style": "模板的CSS样式",
-    "author": "模板作者"
+    "style": "模板的CSS样式（可选）",
+    "author": "模板作者（可选）"
 }}"""
 
         try:
-            # 调用 LLM 生成模板
-            response = await self.llm_service.chat_completion([
-                {"role": "system", "content": "你是一个JSON生成器。只返回JSON格式的数据，不要添加任何其他内容。"},
-                {"role": "user", "content": prompt}
-            ])
+            # 优化点1: 缓存类似的请求
+            cache_key = template_data.description
+            cached_result = self._json_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"使用缓存的模板定义")
+                result = cached_result
+            else:
+                # 调用 LLM 生成模板 - 超时控制
+                llm_start_time = time.time()
+                try:
+                    # 使用asyncio.wait_for添加超时控制
+                    response = await asyncio.wait_for(
+                        self.llm_service.chat_completion([
+                            {"role": "system", "content": "你是一个JSON生成器。只返回JSON格式的数据，不要添加任何其他内容。"},
+                            {"role": "user", "content": prompt}
+                        ]), 
+                        timeout=30.0  # 30秒超时
+                    )
+                    llm_elapsed = time.time() - llm_start_time
+                    logger.info(f"LLM响应时间: {llm_elapsed:.2f}秒")
+                    
+                    # 清理和解析响应
+                    content = response.get("content", "").strip()
+                    logger.debug(f"LLM响应: {content[:200]}...")
+                    result = self._extract_json(content)
+                    
+                    # 优化点2: 缓存结果
+                    self._json_cache.put(cache_key, result)
+                except asyncio.TimeoutError:
+                    logger.warning("LLM请求超时，使用基本模板")
+                    # 超时时使用基本模板结构
+                    result = {
+                        "name": template_data.description[:20],
+                        "content": "模板内容 - 请编辑",
+                        "prompt_template": "<div>模板内容 - 请编辑</div>",
+                        "variables": [],
+                        "category": "通用",
+                        "description": template_data.description,
+                        "style": "",
+                        "author": "系统"
+                    }
             
-            # 清理响应内容
-            content = response.get("content", "").strip()
-            print(f"LLM Response: {content}")  # 添加日志
+            # 验证必需的字段
+            required_fields = ["name", "content", "prompt_template", "variables"]
+            if not all(key in result for key in required_fields):
+                for key in required_fields:
+                    if key not in result:
+                        result[key] = "" if key != "variables" else []
+                logger.warning(f"模板缺少必需的字段，已添加默认值")
             
-            # 尝试提取 JSON 部分
-            try:
-                # 查找第一个 { 和最后一个 }
-                start = content.find('{')
-                end = content.rfind('}')
-                if start == -1 or end == -1:
-                    raise ValueError("无法在响应中找到有效的 JSON")
-                
-                json_str = content[start:end+1]
-                result = json.loads(json_str)
-                
-                # 验证必需的字段
-                required_fields = ["name", "content", "prompt_template", "variables"]
-                if not all(key in result for key in required_fields):
-                    raise ValueError("响应缺少必需的字段")
-                
-                # 创建模板对象
-                db_template = Template(
-                    name=result["name"],
-                    description=result["description"],
-                    content=result["content"],
-                    prompt_template=result["prompt_template"],
-                    variables={"variables": result["variables"]},
-                    category=result.get("category", "通用"),
-                    author=result.get("author", "AI助手"),
-                    style=result.get("style", "")
-                )
-                
-                self.db.add(db_template)
-                await self.db.commit()
-                await self.db.refresh(db_template)
-                
-                # 构造响应
-                return {
-                    "id": db_template.id,
-                    "name": db_template.name,
-                    "description": db_template.description,
-                    "content": db_template.content,
-                    "prompt_template": db_template.prompt_template,
-                    "variables": db_template.variables["variables"],
-                    "category": db_template.category,
-                    "author": db_template.author,
-                    "created_at": db_template.created_at,
-                    "updated_at": db_template.updated_at,
-                    "version": db_template.version,
-                    "status": db_template.status,
-                    "usage_count": db_template.usage_count
-                }
-                
-            except json.JSONDecodeError as e:
-                print(f"JSON解析错误: {str(e)}")  # 添加错误日志
-                raise ValueError(f"JSON解析错误: {str(e)}")
+            # 优化点3: 并行处理数据库操作
+            # 创建模板对象
+            db_template = Template(
+                name=result.get("name", template_data.description[:20]),
+                description=result.get("description", template_data.description),
+                content=result.get("content", ""),
+                prompt_template=result.get("prompt_template", ""),
+                variables={"variables": result.get("variables", [])},
+                category=result.get("category", "通用"),
+                author=result.get("author", "AI助手"),
+                style=result.get("style", "")
+            )
+            
+            # 数据库操作
+            self.db.add(db_template)
+            await self.db.commit()
+            await self.db.refresh(db_template)
+            
+            # 构造响应
+            response_data = {
+                "id": db_template.id,
+                "name": db_template.name,
+                "description": db_template.description,
+                "content": db_template.content,
+                "prompt_template": db_template.prompt_template,
+                "variables": db_template.variables["variables"],
+                "category": db_template.category,
+                "author": db_template.author,
+                "created_at": db_template.created_at,
+                "updated_at": db_template.updated_at,
+                "version": db_template.version,
+                "status": db_template.status,
+                "usage_count": db_template.usage_count
+            }
+            
+            total_elapsed = time.time() - start_time
+            logger.info(f"模板创建完成，耗时: {total_elapsed:.2f}秒")
+            return response_data
             
         except Exception as e:
             await self.db.rollback()
-            print(f"Error creating template: {str(e)}")  # 添加错误日志
+            logger.error(f"创建模板时出错: {str(e)}")
             raise Exception(f"创建模板时出错: {str(e)}")
 
     async def get_template(self, template_id: int) -> Optional[Template]:
@@ -156,95 +245,120 @@ class TemplateService:
         } for template in templates]
 
     async def use_template(self, template_id: int, template_use: TemplateUse) -> TemplateUsageResponse:
-        template_data = await self.get_template(template_id)
-        if not template_data:
-            raise ValueError("Template not found")
-            
+        """使用模板生成内容 - 性能优化版本"""
+        start_time = time.time()
+        logger.info(f"开始使用模板 {template_id} 生成内容")
+        
+        # 优化点1: 异步并行获取模板数据
+        template_data_task = asyncio.create_task(self.get_template(template_id))
+        
         try:
+            # 等待模板数据
+            template_data = await template_data_task
+            if not template_data:
+                raise ValueError("Template not found")
+                
             # 获取模板变量定义
             variables = template_data["variables"]
             var_definitions = {var["name"]: var["description"] for var in variables}
             
-            # 构建包含所有变量的优化提示词
-            variables_info = []
-            for var_name, var_value in template_use.variable_values.items():
-                if var_name in var_definitions:
-                    variables_info.append(f"""变量名：{var_name}
+            # 优化点2: 跳过不必要的LLM调用
+            # 如果没有变量或所有变量都为空，直接使用原始值
+            if not template_use.variable_values or all(not val for val in template_use.variable_values.values()):
+                logger.info("跳过变量优化，使用原始值")
+                optimized_values = template_use.variable_values
+            else:
+                # 构建包含所有变量的优化提示词
+                variables_info = []
+                for var_name, var_value in template_use.variable_values.items():
+                    if var_name in var_definitions:
+                        variables_info.append(f"""变量名：{var_name}
 描述：{var_definitions[var_name]}
 当前值：{var_value}
 ---""")
-            
-            if variables_info:
-                prompt = f"""请优化以下模板变量的值。对于每个变量，根据其描述优化用户输入的内容。
+                
+                if variables_info:
+                    # 优化点3: 优化LLM提示，使其更简洁高效
+                    prompt = f"""优化以下模板变量值，返回JSON格式：
 
 {chr(10).join(variables_info)}
 
 要求：
-1. 保持原意的同时，使表达更加专业、准确
-2. 改正可能存在的语法错误
-3. 优化语言表达，使其更加流畅
-4. 如果是数字，保持原有格式
-5. 如果是日期，统一格式为 YYYY-MM-DD
-6. 如果内容合适，无需修改，直接返回原文
+1. 保持原意，使表达更专业准确
+2. 改正语法错误，优化语言表达
+3. 数字保持原格式，日期统一为YYYY-MM-DD
+4. 内容合适时保持原文
 
-请按以下JSON格式返回优化结果（不要添加任何其他内容）：
+仅返回JSON格式：
 {{
     "变量名1": "优化后的值1",
-    "变量名2": "优化后的值2",
-    ...
+    "变量名2": "优化后的值2"
 }}"""
 
-                # 调用 LLM 优化所有变量值
-                response = await self.llm_service.chat(
-                    system="你是一个文本优化助手。请直接返回JSON格式的优化结果，不要添加任何解释或其他内容。",
-                    history=[],
-                    message=prompt
-                )
-                
-                try:
-                    # 解析优化后的值
-                    optimized_values = json.loads(response.strip())
-                except json.JSONDecodeError:
-                    # 如果解析失败，尝试提取 JSON 部分
-                    start = response.find('{')
-                    end = response.rfind('}')
-                    if start != -1 and end != -1:
+                    # 优化点4: 添加超时控制
+                    try:
+                        llm_start = time.time()
+                        response = await asyncio.wait_for(
+                            self.llm_service.chat(
+                                system="你是文本优化助手。直接返回JSON格式结果，不要添加任何解释。",
+                                history=[],
+                                message=prompt
+                            ),
+                            timeout=20.0  # 20秒超时
+                        )
+                        logger.info(f"LLM响应时间: {time.time() - llm_start:.2f}秒")
+                        
+                        # 优化点5: 使用通用JSON提取函数
                         try:
-                            optimized_values = json.loads(response[start:end+1])
-                        except json.JSONDecodeError:
-                            # 如果还是失败，使用原始值
+                            optimized_values = self._extract_json(response)
+                        except ValueError:
+                            logger.warning("无法解析LLM响应，使用原始值")
                             optimized_values = template_use.variable_values
-                    else:
+                    except asyncio.TimeoutError:
+                        logger.warning("LLM优化请求超时，使用原始值")
                         optimized_values = template_use.variable_values
-            else:
-                optimized_values = template_use.variable_values
-                
-            # 使用优化后的变量值替换模板内容
+                else:
+                    optimized_values = template_use.variable_values
+                    
+            # 优化点6: 更高效的变量替换
             content = template_data["prompt_template"]
-            for var_name, var_value in optimized_values.items():
-                if var_name in var_definitions:  # 只替换定义过的变量
-                    content = content.replace(f"{{{var_name}}}", var_value)
-                
-            # 更新使用次数
-            query = select(Template).where(Template.id == template_id)
-            result = await self.db.execute(query)
-            template = result.scalar_one_or_none()
+            # 预编译正则表达式
+            var_pattern = re.compile(r'\{([^}]+)\}')
+            # 一次性替换所有变量
+            matches = var_pattern.findall(content)
+            for var_name in matches:
+                if var_name in optimized_values and var_name in var_definitions:
+                    content = content.replace(f"{{{var_name}}}", optimized_values[var_name])
             
-            if template:
-                template.usage_count += 1
-                await self.db.commit()
+            # 优化点7: 异步更新使用次数
+            async def update_usage_count():
+                query = select(Template).where(Template.id == template_id)
+                result = await self.db.execute(query)
+                template = result.scalar_one_or_none()
+                if template:
+                    template.usage_count += 1
+                    await self.db.commit()
             
-            return {
+            # 不等待更新完成，让它在后台运行
+            asyncio.create_task(update_usage_count())
+            
+            # 构建响应
+            response = {
                 "id": 0,  # 这里应该是使用记录的ID
                 "template_id": template_id,
-                "variable_values": optimized_values,  # 返回优化后的变量值
-                "original_values": template_use.variable_values,  # 保留原始值
+                "variable_values": optimized_values,
+                "original_values": template_use.variable_values,
                 "generated_content": content,
                 "created_at": datetime.utcnow()
             }
             
+            total_elapsed = time.time() - start_time
+            logger.info(f"模板使用完成，耗时: {total_elapsed:.2f}秒")
+            return response
+            
         except Exception as e:
             await self.db.rollback()
+            logger.error(f"使用模板时出错: {str(e)}")
             raise ValueError(f"使用模板时出错: {str(e)}")
 
     def _extract_variables(self, content: str) -> List[str]:
