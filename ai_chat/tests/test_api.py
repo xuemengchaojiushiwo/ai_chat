@@ -178,4 +178,61 @@ def test_invalid_file_upload(test_client):
         try:
             os.unlink(tmp.name)
         except (OSError, PermissionError):
-            pass  # 忽略删除失败的错误 
+            pass  # 忽略删除失败的错误
+
+def test_optimized_conversation_creation(test_client):
+    """测试优化后的对话创建功能"""
+    client = test_client
+    
+    # 1. 创建对话
+    conversation_data = {
+        "name": "这是一个测试对话，用于验证优化后的对话创建功能",
+        "workspace_id": 0  # 不使用RAG简化测试
+    }
+    
+    response = client.post("/api/v1/chat/conversations/create", json=conversation_data)
+    assert response.status_code == 200
+    conversation = response.json()
+    conversation_id = conversation["id"]
+    
+    # 2. 验证是否创建成功并且有标题
+    assert "name" in conversation
+    assert conversation["name"] is not None and len(conversation["name"]) > 0
+    
+    # 3. 获取对话消息
+    response = client.get(f"/api/v1/chat/conversations/messages/{conversation_id}")
+    assert response.status_code == 200
+    messages = response.json()
+    
+    # 4. 验证消息
+    # 应该有两条消息：用户问题和AI回复
+    assert len(messages) == 2
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == conversation_data["name"]
+    assert messages[1]["role"] == "assistant"
+    
+    # 确保AI回复中不包含标题标记
+    assert "###TITLE:" not in messages[1]["content"]
+    
+    # 5. 测试发送后续消息
+    message_data = {
+        "message": "这是一条后续消息，测试对话流程是否正常",
+        "use_rag": False
+    }
+    
+    response = client.post(f"/api/v1/chat/conversations/send-message?conversation_id={conversation_id}", json=message_data)
+    assert response.status_code == 200
+    
+    # 6. 再次获取对话消息
+    response = client.get(f"/api/v1/chat/conversations/messages/{conversation_id}")
+    assert response.status_code == 200
+    messages = response.json()
+    
+    # 验证消息数量和内容
+    assert len(messages) == 4  # 应该有四条消息
+    assert messages[2]["role"] == "user"
+    assert messages[2]["content"] == message_data["message"]
+    assert messages[3]["role"] == "assistant"
+    
+    # 7. 清理测试数据
+    client.post(f"/api/v1/chat/conversations/delete?conversation_id={conversation_id}") 

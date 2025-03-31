@@ -80,7 +80,7 @@ class ConversationService:
         """创建新对话"""
         logger.info(f"Creating conversation with name: {name} and workspace_id: {workspace_id}")
         try:
-            # 获取AI回复
+            # 获取AI回复和标题（合并为一次LLM调用）
             logger.info(f"Getting AI response for: {name}")
             llm = LLMFactory.create_llm()
             
@@ -100,18 +100,28 @@ class ConversationService:
             else:
                 logger.info("Creating conversation without RAG (workspace_id = 0)")
 
+            # 修改系统提示以包含生成标题的请求
+            enhanced_system_prompt = system_prompt + "\n\n同时，请在回复的最后一行单独添加一行，格式为：\n###TITLE:简短的对话标题\n这个标题应该不超过20个字，不包含标点符号，概括对话主题。这一行不会显示给用户。"
+
             ai_response = await llm.chat(
-                system=system_prompt,
+                system=enhanced_system_prompt,
                 history=[],
                 message=name
             )
             logger.info(f"Got AI response: {ai_response[:50]}...")
 
-            # 生成对话标题
-            logger.info("Generating conversation title...")
-            title = await self.generate_title(name, ai_response)
-            logger.info(f"Generated title: {title}")
-
+            # 提取标题和实际回复
+            title = name[:20]  # 默认标题，使用提问的前20个字符
+            response_content = ai_response
+            
+            # 检查是否包含标题标记
+            if "###TITLE:" in ai_response:
+                parts = ai_response.split("###TITLE:")
+                response_content = parts[0].strip()
+                if len(parts) > 1:
+                    title = parts[1].strip()[:20]
+                    logger.info(f"Extracted title: {title}")
+            
             # 创建对话
             conversation = DBConversation(
                 title=title,
@@ -151,7 +161,7 @@ class ConversationService:
 
             assistant_message = Message(
                 conversation_id=conversation.id,
-                content=ai_response,
+                content=response_content,  # 使用清理后的响应内容
                 role="assistant",
                 created_at=datetime.utcnow(),
                 citations=citations
@@ -351,9 +361,14 @@ AI：{ai_response}
             # 构建系统提示
             system_prompt = self._build_system_prompt(relevant_docs)
 
-            # 获取对话历史
+            # 获取对话历史并使用 ConversationManager 处理
             history_result = await self.get_messages(conversation_id)
-            history = [(msg.role, msg.content) for msg in history_result[-5:]]
+            conversation_manager = ConversationManager()
+            messages = [{"role": msg.role, "content": msg.content} for msg in history_result]
+            preserved_messages = conversation_manager.prepare_messages(messages)
+            history = [(msg["role"], msg["content"]) for msg in preserved_messages]
+            
+            logger.info(f"Using {len(history)} messages from history within token limit")
             
             # 调用 LLM
             llm = LLMFactory.create_llm()
