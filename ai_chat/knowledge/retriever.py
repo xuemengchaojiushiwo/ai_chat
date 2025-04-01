@@ -95,13 +95,12 @@ class Retriever:
             query_embedding = await self.embedding_factory.get_embeddings(query)
             if not isinstance(query_embedding, np.ndarray):
                 query_embedding = np.array(query_embedding)
-            query_embedding = query_embedding.flatten().tolist()  # 转换为列表
+            query_embedding = query_embedding.flatten().tolist()
             self.logger.info(f"Generated query embedding")
 
             # 2. 构建Chroma查询条件
             where_filter = None
             if workspace_id:
-                # 获取工作空间关联的文档ID
                 stmt = (
                     select(DocumentWorkspace.document_id)
                     .filter(DocumentWorkspace.workspace_id == workspace_id)
@@ -110,21 +109,18 @@ class Retriever:
                 document_ids = [str(doc_id) for doc_id, in result.fetchall()]
                 
                 if document_ids:
-                    # 直接使用document_id作为过滤条件
                     where_filter = {"document_id": {"$in": document_ids}}
                     self.logger.info(f"Searching in workspace {workspace_id} with documents: {document_ids}")
-                    self.logger.debug(f"Using filter: {where_filter}")
 
-            # 3. 使用Chroma进行向量检索
+            # 3. 使用Chroma进行向量检索，增加检索数量以提高召回率
             try:
                 results = await vector_store.query_similar(
                     query_embedding=query_embedding,
-                    n_results=limit,
+                    n_results=limit * 5,  # 增加检索数量
                     where=where_filter
                 )
                 self.logger.info(f"Chroma search completed")
                 
-                # 打印原始结果
                 if results and results.get("ids") and results["ids"][0]:
                     self.logger.info("Chroma raw results:")
                     for i, (doc_id, distance) in enumerate(zip(results["ids"][0], results["distances"][0])):
@@ -144,11 +140,10 @@ class Retriever:
                     results["distances"][0],
                     results["metadatas"][0]
                 )):
-                    # 使用Chroma返回的相似度分数
-                    # 余弦距离 = 1 - 余弦相似度
-                    # 所以余弦相似度 = 1 - 余弦距离
-                    similarity = 1 - distance
-                    self.logger.info(f"Processing result {i+1}: distance={distance:.4f}, similarity={similarity:.4f}")
+                    # 修正相似度计算 - 使用与测试脚本相同的公式
+                    # Chroma使用cosine distance，范围是[0, 2]
+                    # cosine_similarity = 1 - (cosine_distance / 2)
+                    similarity = 1 - (distance / 2)
                     
                     # 获取文档段落信息
                     segment_result = await self.db.execute(
@@ -166,6 +161,7 @@ class Retriever:
                         
                         if document:
                             self.logger.info(f"Found matching segment {segment.id} from document {document.name} with similarity {similarity:.4f}")
+                            
                             similarities.append({
                                 'segment_id': segment.id,
                                 'document_id': segment.document_id,
@@ -193,6 +189,62 @@ class Retriever:
         except Exception as e:
             self.logger.error(f"Search error: {str(e)}")
             raise
+
+    def _compute_text_relevance(self, query: str, content: str) -> float:
+        """计算文本相关性分数，考虑标题和列表的权重"""
+        try:
+            # 将查询和内容转换为小写
+            query = query.lower()
+            content = content.lower()
+            
+            # 计算关键词匹配度
+            query_words = set(query.split())
+            content_words = set(content.split())
+            matching_words = query_words.intersection(content_words)
+            
+            # 计算匹配分数
+            if len(query_words) == 0:
+                return 0.0
+            
+            # 计算基础分数
+            base_score = len(matching_words) / len(query_words)
+            
+            # 考虑完整短语匹配
+            phrase_bonus = 0.0
+            if query in content:
+                phrase_bonus = 0.3
+            
+            # 检查是否是标题或列表
+            is_title = any(line.startswith(('#', '##', '###')) for line in content.split('\n')) or content.isupper()
+            is_list = any(line.strip().startswith(('•', '-', '*', '1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.')) 
+                         for line in content.split('\n'))
+            
+            # 添加标题和列表的权重
+            structure_bonus = 0.0
+            if is_title:
+                structure_bonus += 0.2
+            if is_list:
+                structure_bonus += 0.2
+            
+            # 计算关键词密度
+            density_score = 0.0
+            content_length = len(content.split())
+            if content_length > 0:
+                keyword_density = len(matching_words) / content_length
+                density_score = min(0.2, keyword_density * 2)  # 最高0.2分
+            
+            # 返回综合分数
+            final_score = min(1.0, base_score + phrase_bonus + structure_bonus + density_score)
+            
+            # 记录详细的评分信息
+            self.logger.info(f"Text relevance scores - Base: {base_score:.2f}, Phrase: {phrase_bonus:.2f}, "
+                           f"Structure: {structure_bonus:.2f}, Density: {density_score:.2f}, Final: {final_score:.2f}")
+            
+            return final_score
+            
+        except Exception as e:
+            self.logger.error(f"Error computing text relevance: {str(e)}")
+            return 0.0
 
     def _compute_similarity(self, query_embedding: List[float], doc_embedding: List[float]) -> float:
         """计算余弦相似度"""

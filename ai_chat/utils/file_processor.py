@@ -53,18 +53,50 @@ def process_pdf(file_path: str) -> Tuple[str, List[Dict[str, Any]]]:
             for page_num, page in enumerate(pdf.pages, 1):
                 # 提取文本和位置信息
                 words = page.extract_words()
+                
+                # 按行分组单词
+                current_line = []
+                current_y = None
+                line_margin = 3  # 允许的行高误差范围（像素）
+                
                 for word in words:
-                    text += word['text'] + " "
-                    # 保存文本块位置信息
+                    if current_y is None:
+                        current_y = word['top']
+                        current_line.append(word)
+                    elif abs(word['top'] - current_y) <= line_margin:
+                        current_line.append(word)
+                    else:
+                        # 处理当前行
+                        if current_line:
+                            line_text = ' '.join(w['text'] for w in current_line)
+                            text_blocks.append({
+                                'text': line_text,
+                                'page_number': page_num,
+                                'bbox_x': min(w['x0'] for w in current_line),
+                                'bbox_y': min(w['top'] for w in current_line),
+                                'bbox_width': max(w['x1'] for w in current_line) - min(w['x0'] for w in current_line),
+                                'bbox_height': max(w['bottom'] for w in current_line) - min(w['top'] for w in current_line)
+                            })
+                            text += line_text + "\n"
+                        
+                        # 开始新的一行
+                        current_y = word['top']
+                        current_line = [word]
+                
+                # 处理最后一行
+                if current_line:
+                    line_text = ' '.join(w['text'] for w in current_line)
                     text_blocks.append({
-                        'text': word['text'],
+                        'text': line_text,
                         'page_number': page_num,
-                        'bbox_x': word['x0'],
-                        'bbox_y': word['top'],
-                        'bbox_width': word['width'],
-                        'bbox_height': word['height']
+                        'bbox_x': min(w['x0'] for w in current_line),
+                        'bbox_y': min(w['top'] for w in current_line),
+                        'bbox_width': max(w['x1'] for w in current_line) - min(w['x0'] for w in current_line),
+                        'bbox_height': max(w['bottom'] for w in current_line) - min(w['top'] for w in current_line)
                     })
-                text += "\n"
+                    text += line_text + "\n"
+                
+                text += "\n"  # 页面之间添加额外的换行
     except Exception as e:
         raise Exception(f"处理 PDF 文件时出错: {str(e)}")
     return text.strip(), text_blocks

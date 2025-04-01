@@ -89,17 +89,54 @@ class VectorStore:
             vector_logger.info(f"Using filter: {where}")
         
         try:
-            # 先检查集合中的所有数据
-            all_data = self.collection.get()
-            vector_logger.info(f"Total documents in collection: {len(all_data['ids'])}")
+            # 提取document_id
+            document_id = None
             
-            # 执行查询，请求更多结果以便过滤
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(n_results * 2, 20),  # 请求更多结果以便过滤
-                where=where,
-                include=["metadatas", "distances", "documents"]
-            )
+            # 从过滤条件中提取document_id - 支持多种格式
+            if where:
+                # 1. 直接格式: {"document_id": "37"}
+                if 'document_id' in where and isinstance(where['document_id'], str):
+                    document_id = where['document_id']
+                    vector_logger.info(f"Using document_id filter: {document_id}")
+                
+                # 2. 列表格式: {"document_id": {"$in": ["37"]}}
+                elif 'document_id' in where and isinstance(where['document_id'], dict) and '$in' in where['document_id']:
+                    # 只取第一个文档ID进行处理
+                    if where['document_id']['$in'] and len(where['document_id']['$in']) > 0:
+                        document_id = where['document_id']['$in'][0]
+                        vector_logger.info(f"Using document_id from $in list: {document_id}")
+                
+                # 3. ID列表格式
+                elif 'id' in where and isinstance(where['id'], dict) and '$in' in where['id']:
+                    # 尝试解析出文档ID
+                    for segment_id in where['id']['$in']:
+                        if segment_id.startswith('doc_'):
+                            parts = segment_id.split('_')
+                            if len(parts) > 1 and parts[1].isdigit():
+                                document_id = parts[1]
+                                vector_logger.info(f"Extracted document_id {document_id} from segment IDs")
+                                break
+            
+            results = None
+            
+            # 如果有document_id，直接使用document_id过滤
+            if document_id:
+                vector_logger.info(f"Querying with document_id: {document_id}")
+                # 统一使用字符串格式的document_id
+                results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=min(n_results * 2, 20),
+                    where={"document_id": str(document_id)},
+                    include=["metadatas", "distances", "documents"]
+                )
+            else:
+                # 无document_id过滤，使用原始过滤条件
+                results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=min(n_results * 2, 20),
+                    where=where,
+                    include=["metadatas", "distances", "documents"]
+                )
             
             # 记录原始距离值
             if results['distances'] and results['distances'][0]:

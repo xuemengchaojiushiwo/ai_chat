@@ -34,7 +34,7 @@ class RetrievalConfig:
     """检索配置"""
     def __init__(self, 
                  top_k: int = 3,
-                 score_threshold: float = settings.VECTOR_SIMILARITY_THRESHOLD,
+                 score_threshold: float = 0.3,  # 降低相似度阈值，提高召回率
                  reranking_enabled: bool = False):
         self.top_k = top_k
         self.score_threshold = score_threshold
@@ -268,12 +268,20 @@ AI：{ai_response}
 
     async def process_retrieved_documents(self, docs: List[Dict], query: str) -> List[Dict]:
         """处理检索到的文档"""
+        logger.info(f"Processing {len(docs)} retrieved documents with threshold {self.default_retrieval_config.score_threshold}")
+        
         processed_docs = []
         for doc in docs:
             # 使用文档中已有的相似度分数
             score = doc.get('similarity', 0)
+            doc_id = doc.get('document_id', 'unknown')
+            segment_id = doc.get('segment_id', 'unknown')
+            
             if score > self.default_retrieval_config.score_threshold:
+                logger.info(f"Document {doc_id} segment {segment_id} accepted: similarity {score:.4f} > threshold {self.default_retrieval_config.score_threshold}")
                 processed_docs.append(doc)
+            else:
+                logger.info(f"Document {doc_id} segment {segment_id} rejected: similarity {score:.4f} <= threshold {self.default_retrieval_config.score_threshold}")
         
         # 按相似度排序
         processed_docs.sort(key=lambda x: x.get('similarity', 0), reverse=True)
@@ -293,7 +301,7 @@ AI：{ai_response}
             "   - 引用时说明信息来源,如'根据文档[1]所述...'",
             "   - 多文档引用使用'根据文档[1]和[2]'格式",
             "2. 引用规则：",
-            "   - 只引用相似度>0.5的文档",
+            "   - 只引用相似度>0.3的文档",
             "   - 优先引用相似度更高的文档",
             "   - 不要编造或修改文档内容",
             "3. 回答要求：",

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, or_, func, and_
 from typing import List, Optional
@@ -19,6 +19,7 @@ import io
 import numpy as np
 from ..utils.embeddings import EmbeddingFactory, get_embedding
 from ..services.vector_store import vector_store
+import urllib.parse
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -257,6 +258,7 @@ async def download_document(
     db: AsyncSession = Depends(get_db)
 ):
     """下载文档"""
+    file_stream = None
     try:
         # 获取文档信息
         result = await db.execute(
@@ -271,24 +273,107 @@ async def download_document(
         if not document.file_path or not os.path.exists(document.file_path):
             raise HTTPException(status_code=404, detail="File not found")
         
-        # 打开文件流
-        file_stream = open(document.file_path, "rb")
-        
-        # 设置响应头
-        headers = {
-            'Content-Disposition': f'attachment; filename="{document.name}"'
-        }
-        
-        # 返回文件流
-        return StreamingResponse(
-            file_stream,
-            media_type=document.mime_type,
-            headers=headers,
-            background=lambda: file_stream.close()  # 确保文件流在响应完成后关闭
-        )
+        try:
+            # 打开文件流
+            file_stream = open(document.file_path, "rb")
+            
+            # 设置响应头，使用URL编码处理中文文件名
+            encoded_filename = urllib.parse.quote(document.name)
+            headers = {
+                'Content-Disposition': f'attachment; filename="{encoded_filename}"'
+            }
+            
+            # 定义异步清理函数
+            async def cleanup():
+                if file_stream:
+                    file_stream.close()
+            
+            # 返回文件流
+            return StreamingResponse(
+                file_stream,
+                media_type=document.mime_type,
+                headers=headers,
+                background=cleanup  # 使用异步清理函数
+            )
+        except UnicodeEncodeError as e:
+            # 确保在发生编码错误时关闭文件流
+            if file_stream:
+                file_stream.close()
+            
+            logger.error(f"Encoding error while downloading document: {str(e)}")
+            # 如果遇到编码问题，尝试返回文本内容
+            if document.content:
+                return JSONResponse(
+                    content={"text": document.content},
+                    status_code=200
+                )
+            else:
+                raise HTTPException(status_code=500, detail="无法处理文件编码")
         
     except Exception as e:
+        # 确保在发生任何错误时关闭文件流
+        if file_stream:
+            file_stream.close()
+        
         logger.error(f"Error downloading document: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/documents/{document_id}/content")
+async def get_document_content(
+    document_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """获取文档内容（纯文本）"""
+    try:
+        # 获取文档信息
+        result = await db.execute(
+            select(DBDocument).filter(DBDocument.id == document_id)
+        )
+        document = result.scalar_one_or_none()
+        
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # 如果文档有存储的文本内容，直接返回
+        if document.content:
+            return JSONResponse(
+                content={"text": document.content},
+                status_code=200
+            )
+            
+        # 如果没有存储的文本内容，但有文件路径，尝试读取文件
+        elif document.file_path and os.path.exists(document.file_path):
+            try:
+                # 对于PDF文件，可以尝试提取文本
+                if document.mime_type == 'application/pdf':
+                    # 这里可以使用PyPDF2或其他PDF解析库提取文本
+                    # 此处仅作为示例，实际实现可能需要添加相应的依赖
+                    return JSONResponse(
+                        content={"text": "PDF文件内容无法直接显示，请下载后查看。"},
+                        status_code=200
+                    )
+                else:
+                    # 对于其他文件类型，尝试直接读取
+                    with open(document.file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    return JSONResponse(
+                        content={"text": content},
+                        status_code=200
+                    )
+            except Exception as read_error:
+                logger.error(f"Error reading file content: {str(read_error)}")
+                return JSONResponse(
+                    content={"text": "无法读取文件内容，可能是不支持的文件格式。"},
+                    status_code=200
+                )
+        else:
+            return JSONResponse(
+                content={"text": "该文档没有可用的文本内容。"},
+                status_code=200
+            )
+            
+    except Exception as e:
+        logger.error(f"Error getting document content: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/documents/rebuild_vectors")

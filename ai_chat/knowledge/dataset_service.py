@@ -199,92 +199,100 @@ class DatasetService:
             await self.db.refresh(document)
             logger.info(f"Created document record with ID: {document.id}")
 
-            # 分割文本并创建文档片段
-            segments = split_text(content)
-            logger.info(f"Split content into {len(segments)} segments")
-
-            # 批量生成向量嵌入
-            all_embeddings = await self.embedding_factory.get_embeddings_batch(segments)
-            logger.info(f"Generated embeddings for {len(segments)} segments")
-
-            # 确保所有向量都是一维列表
-            processed_embeddings = []
-            for emb in all_embeddings:
-                # 如果是numpy数组，直接转换为列表
-                if isinstance(emb, np.ndarray):
-                    processed_embeddings.append(emb.tolist())
-                # 如果是列表
-                elif isinstance(emb, list):
-                    # 如果是嵌套列表，获取内部的向量
-                    if len(emb) == 1 and isinstance(emb[0], (list, np.ndarray)):
-                        inner_emb = emb[0]
-                        if isinstance(inner_emb, np.ndarray):
-                            processed_embeddings.append(inner_emb.tolist())
-                        else:
-                            processed_embeddings.append(inner_emb)
-                    # 如果已经是一维列表，直接使用
-                    else:
-                        processed_embeddings.append(emb)
-                else:
-                    processed_embeddings.append(emb)
+            # 按页面组织文本块
+            page_blocks = {}
+            for block in text_blocks:
+                page_num = block['page_number']
+                if page_num not in page_blocks:
+                    page_blocks[page_num] = []
+                page_blocks[page_num].append(block)
             
-            all_embeddings = processed_embeddings
-            logger.info(f"Normalized {len(all_embeddings)} embeddings to 1D lists")
-            for i, emb in enumerate(all_embeddings):
-                logger.info(f"Embedding {i} type: {type(emb)}, shape: {len(emb) if isinstance(emb, list) else 'unknown'}")
-
-            # 准备批量插入的数据
+            # 为每个页面分别处理文本块
             segment_records = []
             embeddings_batch = []
             ids_batch = []
             documents_batch = []
-            metadatas_batch = []
-
-            logger.info(f"Processing {len(segments)} segments with {len(all_embeddings)} embeddings")
             
-            for i, (segment, embedding) in enumerate(zip(segments, all_embeddings)):
-                logger.info(f"Processing segment {i}: length={len(segment)}, embedding shape={len(embedding) if isinstance(embedding, list) else 'unknown'}")
+            for page_num, blocks in page_blocks.items():
+                # 按位置排序文本块
+                blocks.sort(key=lambda x: (x['bbox_y'], x['bbox_x']))
                 
-                # 查找对应的文本块位置信息
-                block_info = None
-                if text_blocks:
-                    # 使用简单的文本匹配来找到对应的文本块
-                    for block in text_blocks:
+                # 合并同一页面的文本
+                page_text = "\n".join(block['text'] for block in blocks)
+                
+                # 分割页面文本
+                page_segments = self._split_text(page_text)
+                
+                # 处理每个段落
+                for i, segment in enumerate(page_segments):
+                    if not segment.strip():
+                        continue
+                        
+                    # 生成embedding
+                    embedding = await self.embedding_factory.get_embeddings(segment)
+                    
+                    # 确保 embedding 是一维列表
+                    if isinstance(embedding, np.ndarray):
+                        embedding = embedding.tolist()
+                    elif isinstance(embedding, list) and len(embedding) == 1:
+                        # 如果是嵌套列表，获取内部向量
+                        if isinstance(embedding[0], (list, np.ndarray)):
+                            embedding = embedding[0]
+                            if isinstance(embedding, np.ndarray):
+                                embedding = embedding.tolist()
+                    
+                    logger.info(f"Embedding type: {type(embedding)}, shape/length: {len(embedding) if isinstance(embedding, list) else 'unknown'}")
+                    
+                    # 找到段落对应的文本块
+                    matching_blocks = []
+                    for block in blocks:
                         if block['text'] in segment:
-                            block_info = block
-                            break
-
-                # 生成唯一的 chroma_id
-                chroma_id = f"doc_{document.id}_seg_{i}"
-                logger.info(f"Generated chroma_id: {chroma_id}")
-
-                # 创建文档片段记录
-                segment_record = DBDocumentSegment(
-                    document_id=document.id,
-                    content=segment,
-                    position=i,
-                    word_count=len(segment.split()),
-                    tokens=len(segment),
-                    page_number=block_info['page_number'] if block_info else None,
-                    bbox_x=block_info['bbox_x'] if block_info else None,
-                    bbox_y=block_info['bbox_y'] if block_info else None,
-                    bbox_width=block_info['bbox_width'] if block_info else None,
-                    bbox_height=block_info['bbox_height'] if block_info else None,
-                    chroma_id=chroma_id
-                )
-                segment_records.append(segment_record)
-                embeddings_batch.append(embedding)
-                ids_batch.append(chroma_id)
-                documents_batch.append(segment)
+                            matching_blocks.append(block)
+                    
+                    # 如果找到匹配的块，计算合并后的边界框
+                    if matching_blocks:
+                        block_info = {
+                            'page_number': page_num,  # 使用当前页码
+                            'bbox_x': min(block['bbox_x'] for block in matching_blocks),
+                            'bbox_y': min(block['bbox_y'] for block in matching_blocks),
+                            'bbox_width': max(block['bbox_x'] + block['bbox_width'] for block in matching_blocks) - min(block['bbox_x'] for block in matching_blocks),
+                            'bbox_height': max(block['bbox_y'] + block['bbox_height'] for block in matching_blocks) - min(block['bbox_y'] for block in matching_blocks)
+                        }
+                    else:
+                        block_info = {'page_number': page_num}  # 至少保存页码信息
+                    
+                    # 生成唯一的 chroma_id
+                    chroma_id = f"doc_{document.id}_seg_{len(segment_records)}"
+                    
+                    # 创建文档片段记录
+                    segment_record = DBDocumentSegment(
+                        document_id=document.id,
+                        content=segment,
+                        position=len(segment_records),
+                        word_count=len(segment.split()),
+                        tokens=len(segment),
+                        page_number=block_info['page_number'],
+                        bbox_x=block_info.get('bbox_x'),
+                        bbox_y=block_info.get('bbox_y'),
+                        bbox_width=block_info.get('bbox_width'),
+                        bbox_height=block_info.get('bbox_height'),
+                        chroma_id=chroma_id
+                    )
+                    
+                    segment_records.append(segment_record)
+                    embeddings_batch.append(embedding)
+                    ids_batch.append(chroma_id)
+                    documents_batch.append(segment)
 
             logger.info(f"Created {len(segment_records)} segment records")
-            logger.info(f"Prepared {len(embeddings_batch)} embeddings, {len(ids_batch)} IDs, and {len(documents_batch)} documents for Chroma")
-
+            logger.info(f"Embeddings batch type check:")
+            for i, emb in enumerate(embeddings_batch):
+                logger.info(f"  Embedding {i}: type={type(emb)}, length={len(emb) if isinstance(emb, (list, np.ndarray)) else 'unknown'}")
+            
             # 批量保存文档片段
             self.db.add_all(segment_records)
             await self.db.commit()
-            logger.info("Created all document segments")
-
+            
             # 更新元数据批处理数据
             metadatas_batch = [
                 {
@@ -297,6 +305,12 @@ class DatasetService:
 
             # 批量添加向量到 Chroma
             try:
+                # 确保所有 embeddings 都是列表格式
+                embeddings_batch = [
+                    emb.tolist() if isinstance(emb, np.ndarray) else emb
+                    for emb in embeddings_batch
+                ]
+                
                 await vector_store.add_embeddings(
                     ids=ids_batch,
                     embeddings=embeddings_batch,
@@ -306,6 +320,8 @@ class DatasetService:
                 logger.info(f"Added {len(ids_batch)} embeddings to vector store")
             except Exception as e:
                 logger.error(f"Error adding embeddings to vector store: {str(e)}")
+                logger.error(f"Embeddings types: {[type(emb) for emb in embeddings_batch]}")
+                logger.error(f"First embedding example: {embeddings_batch[0][:10] if embeddings_batch else 'No embeddings'}")
                 raise
 
             return document
@@ -315,10 +331,10 @@ class DatasetService:
             raise
 
     def _split_text(self, text: str, max_length: int = 1000) -> List[str]:
-        """将文本分割成段落"""
+        """将文本分割成段落，保持标题和列表的完整性"""
         logger.info(f"Starting text splitting. Input text length: {len(text)}")
         
-        # 按段落分割
+        # 首先按段落分割
         paragraphs = text.split('\n\n')
         logger.info(f"Split into {len(paragraphs)} raw paragraphs")
         
@@ -326,31 +342,98 @@ class DatasetService:
         segments = []
         current_segment = ""
         current_length = 0
+        in_list = False
+        list_items = []
         
         for para in paragraphs:
             para = para.strip()
             if not para:
                 continue
+            
+            # 检查是否是标题（通过标记符号判断）
+            is_title = any(para.startswith(marker) for marker in ['#', '##', '###']) or para.isupper()
+            
+            # 检查是否是列表项
+            is_list_item = para.startswith(('•', '-', '*', '1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.'))
+            
+            # 如果是标题，作为独立段落
+            if is_title:
+                # 如果有未处理的列表，先保存
+                if list_items:
+                    list_text = "\n".join(list_items)
+                    segments.append(list_text)
+                    list_items = []
+                    in_list = False
                 
-            # 如果当前段落加上已有内容不超过最大长度，则添加到当前片段
+                # 如果有未处理的段落，先保存
+                if current_segment:
+                    segments.append(current_segment.strip())
+                    current_segment = ""
+                    current_length = 0
+                
+                # 保存标题
+                segments.append(para)
+                continue
+            
+            # 处理列表项
+            if is_list_item:
+                if not in_list:
+                    # 如果有未处理的段落，先保存
+                    if current_segment:
+                        segments.append(current_segment.strip())
+                        current_segment = ""
+                        current_length = 0
+                    in_list = True
+                list_items.append(para)
+                continue
+            
+            # 如果不是列表项但之前在处理列表
+            if in_list and not is_list_item:
+                # 保存之前的列表
+                list_text = "\n".join(list_items)
+                segments.append(list_text)
+                list_items = []
+                in_list = False
+            
+            # 处理普通段落
             if current_length + len(para) <= max_length:
                 current_segment += para + "\n\n"
                 current_length += len(para)
             else:
-                # 如果当前片段不为空，保存它
+                # 如果当前段落不为空，保存它
                 if current_segment:
                     segments.append(current_segment.strip())
-                # 开始新的片段
-                current_segment = para + "\n\n"
-                current_length = len(para)
+                
+                # 如果单个段落超过最大长度，需要进一步分割
+                if len(para) > max_length:
+                    # 按句子分割
+                    sentences = para.split('。')
+                    current_segment = ""
+                    current_length = 0
+                    for sentence in sentences:
+                        if current_length + len(sentence) <= max_length:
+                            current_segment += sentence + "。"
+                            current_length += len(sentence) + 1
+                        else:
+                            if current_segment:
+                                segments.append(current_segment.strip())
+                            current_segment = sentence + "。"
+                            current_length = len(sentence) + 1
+                else:
+                    current_segment = para + "\n\n"
+                    current_length = len(para)
         
-        # 添加最后一个片段
-        if current_segment:
+        # 处理最后的段落
+        if list_items:
+            list_text = "\n".join(list_items)
+            segments.append(list_text)
+        elif current_segment:
             segments.append(current_segment.strip())
         
         logger.info(f"Final segments count: {len(segments)}")
         for i, segment in enumerate(segments):
             logger.info(f"Segment {i+1} length: {len(segment)}")
+            logger.info(f"Segment {i+1} preview: {segment[:100]}...")
             
         return segments
 

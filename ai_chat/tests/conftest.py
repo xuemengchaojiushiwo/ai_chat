@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -58,4 +59,24 @@ def test_client(test_session):
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as client:
         yield client
-    app.dependency_overrides.clear() 
+    app.dependency_overrides.clear()
+
+def pytest_addoption(parser):
+    parser.addoption("--doc-id", action="store", default=None, type=int,
+                    help="指定要查询的文档ID")
+
+@pytest.fixture
+def document_id(request):
+    return request.config.getoption("--doc-id")
+
+@pytest_asyncio.fixture
+async def db_session():
+    """创建测试数据库会话，使用实际的数据库"""
+    from ..database import get_db
+    
+    # 正确获取会话对象
+    async for session in get_db():
+        try:
+            yield session
+        finally:
+            await session.close() 
