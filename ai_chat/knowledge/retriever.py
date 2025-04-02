@@ -101,24 +101,73 @@ class Retriever:
             # 2. 构建Chroma查询条件
             where_filter = None
             if workspace_id:
+                # 首先检查工作空间中的文档
                 stmt = (
-                    select(DocumentWorkspace.document_id)
+                    select(DocumentWorkspace.document_id, Document.name)
+                    .join(Document)
                     .filter(DocumentWorkspace.workspace_id == workspace_id)
                 )
                 result = await self.db.execute(stmt)
-                document_ids = [str(doc_id) for doc_id, in result.fetchall()]
+                workspace_docs = result.fetchall()
                 
-                if document_ids:
+                if workspace_docs:
+                    document_ids = [str(doc_id) for doc_id, _ in workspace_docs]
+                    self.logger.info(f"Found {len(workspace_docs)} documents in workspace {workspace_id}:")
+                    for doc_id, doc_name in workspace_docs:
+                        self.logger.info(f"  Document {doc_id}: {doc_name}")
+                    
+                    # 确保文档ID是字符串类型
                     where_filter = {"document_id": {"$in": document_ids}}
-                    self.logger.info(f"Searching in workspace {workspace_id} with documents: {document_ids}")
+                    self.logger.info(f"Using where filter: {where_filter}")
+                else:
+                    self.logger.warning(f"No documents found in workspace {workspace_id}")
+                    return []
 
-            # 3. 使用Chroma进行向量检索，增加检索数量以提高召回率
+            # 3. 使用Chroma进行向量检索
             try:
-                results = await vector_store.query_similar(
-                    query_embedding=query_embedding,
-                    n_results=limit * 5,  # 增加检索数量
-                    where=where_filter
-                )
+                # 增加检索数量以提高召回率
+                n_results = limit * 10  # 增加检索数量
+                self.logger.info(f"Searching with n_results={n_results}, where_filter={where_filter}")
+                
+                # 对每个文档分别进行查询
+                all_results = []
+                if workspace_docs:
+                    for doc_id, doc_name in workspace_docs:
+                        doc_filter = {"document_id": str(doc_id)}
+                        self.logger.info(f"Querying document {doc_id} ({doc_name})")
+                        
+                        doc_results = await vector_store.query_similar(
+                            query_embedding=query_embedding,
+                            n_results=n_results,
+                            where=doc_filter
+                        )
+                        
+                        if doc_results and doc_results.get("ids") and doc_results["ids"][0]:
+                            all_results.append(doc_results)
+                            self.logger.info(f"Found {len(doc_results['ids'][0])} results for document {doc_id}")
+                
+                # 合并所有文档的结果
+                if all_results:
+                    # 合并所有文档的ID、距离和元数据
+                    combined_ids = []
+                    combined_distances = []
+                    combined_metadatas = []
+                    
+                    for result in all_results:
+                        combined_ids.extend(result["ids"][0])
+                        combined_distances.extend(result["distances"][0])
+                        combined_metadatas.extend(result["metadatas"][0])
+                    
+                    # 按距离排序
+                    sorted_indices = np.argsort(combined_distances)
+                    results = {
+                        "ids": [combined_ids],
+                        "distances": [combined_distances],
+                        "metadatas": [combined_metadatas]
+                    }
+                else:
+                    results = {"ids": [[]], "distances": [[]], "metadatas": [[]]}
+                
                 self.logger.info(f"Chroma search completed")
                 
                 if results and results.get("ids") and results["ids"][0]:
@@ -140,9 +189,7 @@ class Retriever:
                     results["distances"][0],
                     results["metadatas"][0]
                 )):
-                    # 修正相似度计算 - 使用与测试脚本相同的公式
-                    # Chroma使用cosine distance，范围是[0, 2]
-                    # cosine_similarity = 1 - (cosine_distance / 2)
+                    # 修正相似度计算
                     similarity = 1 - (distance / 2)
                     
                     # 获取文档段落信息
@@ -160,31 +207,44 @@ class Retriever:
                         document = document_result.scalar_one_or_none()
                         
                         if document:
-                            self.logger.info(f"Found matching segment {segment.id} from document {document.name} with similarity {similarity:.4f}")
+                            # 计算文本相关性分数
+                            text_relevance = self._compute_text_relevance(query, segment.content)
                             
-                            similarities.append({
-                                'segment_id': segment.id,
-                                'document_id': segment.document_id,
-                                'content': segment.content,
-                                'similarity': float(similarity),
-                                'document_name': document.name,
-                                'page_number': segment.page_number,
-                                'bbox_x': segment.bbox_x,
-                                'bbox_y': segment.bbox_y,
-                                'bbox_width': segment.bbox_width,
-                                'bbox_height': segment.bbox_height
-                            })
+                            # 综合相似度 = 向量相似度 * 0.6 + 文本相关性 * 0.4
+                            combined_similarity = similarity * 0.6 + text_relevance * 0.4
+                            
+                            # 只有当综合相似度超过阈值时才添加结果
+                            if combined_similarity >= 0.5:  # 提高相似度阈值
+                                self.logger.info(f"Found matching segment {segment.id} from document {document.name} (ID: {document.id}) with combined similarity {combined_similarity:.4f}")
+                                self.logger.info(f"Segment content preview: {segment.content[:100]}...")
+
+                                similarities.append({
+                                    'segment_id': segment.id,
+                                    'document_id': segment.document_id,
+                                    'content': segment.content,
+                                    'similarity': float(combined_similarity),
+                                    'document_name': document.name,
+                                    'page_number': segment.page_number,
+                                    'bbox_x': segment.bbox_x,
+                                    'bbox_y': segment.bbox_y,
+                                    'bbox_width': segment.bbox_width,
+                                    'bbox_height': segment.bbox_height
+                                })
 
             # 5. 按相似度降序排序
             similarities.sort(key=lambda x: x['similarity'], reverse=True)
             
-            # 记录检索结果
+            # 限制返回结果数量为2个最相关的段落
+            similarities = similarities[:2]
+            
+            # 记录最终检索结果
             self.logger.info(f"Found {len(similarities)} relevant segments")
-            for sim in similarities[:limit]:
-                self.logger.info(f"Document: {sim['document_name']}, Similarity: {sim['similarity']:.4f}")
+            for sim in similarities:
+                self.logger.info(f"Final result - Document: {sim['document_name']} (ID: {sim['document_id']}), "
+                               f"Similarity: {sim['similarity']:.4f}, Page: {sim['page_number']}")
                 self.logger.info(f"Content preview: {sim['content'][:100]}...")
 
-            return similarities[:limit]
+            return similarities
 
         except Exception as e:
             self.logger.error(f"Search error: {str(e)}")
@@ -212,7 +272,7 @@ class Retriever:
             # 考虑完整短语匹配
             phrase_bonus = 0.0
             if query in content:
-                phrase_bonus = 0.3
+                phrase_bonus = 0.3  # 降低完整短语匹配的权重
             
             # 检查是否是标题或列表
             is_title = any(line.startswith(('#', '##', '###')) for line in content.split('\n')) or content.isupper()
@@ -222,7 +282,7 @@ class Retriever:
             # 添加标题和列表的权重
             structure_bonus = 0.0
             if is_title:
-                structure_bonus += 0.2
+                structure_bonus += 0.2  # 降低标题权重
             if is_list:
                 structure_bonus += 0.2
             
@@ -231,11 +291,11 @@ class Retriever:
             content_length = len(content.split())
             if content_length > 0:
                 keyword_density = len(matching_words) / content_length
-                density_score = min(0.2, keyword_density * 2)  # 最高0.2分
+                density_score = min(0.2, keyword_density * 2)  # 降低密度分数上限
             
             # 返回综合分数
             final_score = min(1.0, base_score + phrase_bonus + structure_bonus + density_score)
-            
+
             # 记录详细的评分信息
             self.logger.info(f"Text relevance scores - Base: {base_score:.2f}, Phrase: {phrase_bonus:.2f}, "
                            f"Structure: {structure_bonus:.2f}, Density: {density_score:.2f}, Final: {final_score:.2f}")

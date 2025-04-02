@@ -17,6 +17,7 @@ from ..services.vector_store import vector_store
 from ..utils.embeddings import EmbeddingFactory
 from ..utils.file_processor import process_file
 from ..utils.text_splitter import split_text
+from ..config import DOCUMENT_PROCESSING
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ class DatasetService:
         self.db = db
         self.embedding_factory = EmbeddingFactory()
         self.logger = logging.getLogger(__name__)  # 添加 logger 初始化
+        self.max_segment_length = DOCUMENT_PROCESSING["max_segment_length"]
+        self.overlap_length = DOCUMENT_PROCESSING["overlap_length"]
+        self.min_segment_length = DOCUMENT_PROCESSING["min_segment_length"]
+        self.max_segments_per_page = DOCUMENT_PROCESSING["max_segments_per_page"]
         
     async def get_datasets(self) -> List[DBDataset]:
         """获取所有知识库列表"""
@@ -330,8 +335,8 @@ class DatasetService:
             logger.error(f"Error processing document: {str(e)}")
             raise
 
-    def _split_text(self, text: str, max_length: int = 1000) -> List[str]:
-        """将文本分割成段落，保持标题和列表的完整性"""
+    def _split_text(self, text: str) -> List[str]:
+        """将文本分割成段落，使用滑动窗口方式"""
         logger.info(f"Starting text splitting. Input text length: {len(text)}")
         
         # 首先按段落分割
@@ -340,95 +345,36 @@ class DatasetService:
         
         # 处理每个段落
         segments = []
-        current_segment = ""
-        current_length = 0
-        in_list = False
-        list_items = []
-        
         for para in paragraphs:
             para = para.strip()
             if not para:
                 continue
             
-            # 检查是否是标题（通过标记符号判断）
-            is_title = any(para.startswith(marker) for marker in ['#', '##', '###']) or para.isupper()
-            
-            # 检查是否是列表项
-            is_list_item = para.startswith(('•', '-', '*', '1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.'))
-            
-            # 如果是标题，作为独立段落
-            if is_title:
-                # 如果有未处理的列表，先保存
-                if list_items:
-                    list_text = "\n".join(list_items)
-                    segments.append(list_text)
-                    list_items = []
-                    in_list = False
-                
-                # 如果有未处理的段落，先保存
-                if current_segment:
-                    segments.append(current_segment.strip())
-                    current_segment = ""
-                    current_length = 0
-                
-                # 保存标题
+            # 如果段落长度小于最大长度，直接添加
+            if len(para) <= self.max_segment_length:
                 segments.append(para)
                 continue
             
-            # 处理列表项
-            if is_list_item:
-                if not in_list:
-                    # 如果有未处理的段落，先保存
-                    if current_segment:
-                        segments.append(current_segment.strip())
-                        current_segment = ""
-                        current_length = 0
-                    in_list = True
-                list_items.append(para)
-                continue
-            
-            # 如果不是列表项但之前在处理列表
-            if in_list and not is_list_item:
-                # 保存之前的列表
-                list_text = "\n".join(list_items)
-                segments.append(list_text)
-                list_items = []
-                in_list = False
-            
-            # 处理普通段落
-            if current_length + len(para) <= max_length:
-                current_segment += para + "\n\n"
-                current_length += len(para)
-            else:
-                # 如果当前段落不为空，保存它
-                if current_segment:
-                    segments.append(current_segment.strip())
+            # 使用滑动窗口方式分割长段落
+            start = 0
+            while start < len(para):
+                # 计算当前窗口的结束位置
+                end = start + self.max_segment_length
                 
-                # 如果单个段落超过最大长度，需要进一步分割
-                if len(para) > max_length:
-                    # 按句子分割
-                    sentences = para.split('。')
-                    current_segment = ""
-                    current_length = 0
-                    for sentence in sentences:
-                        if current_length + len(sentence) <= max_length:
-                            current_segment += sentence + "。"
-                            current_length += len(sentence) + 1
-                        else:
-                            if current_segment:
-                                segments.append(current_segment.strip())
-                            current_segment = sentence + "。"
-                            current_length = len(sentence) + 1
-                else:
-                    current_segment = para + "\n\n"
-                    current_length = len(para)
-        
-        # 处理最后的段落
-        if list_items:
-            list_text = "\n".join(list_items)
-            segments.append(list_text)
-        elif current_segment:
-            segments.append(current_segment.strip())
+                # 如果不是最后一个窗口，尝试在句子边界分割
+                if end < len(para):
+                    # 在最大长度范围内找到最后一个句号
+                    last_period = para.rfind('。', start, end)
+                    if last_period > start + self.min_segment_length:
+                        end = last_period + 1
+                
+                # 提取当前段落
+                current_segment = para[start:end].strip()
+                if current_segment:
+                    segments.append(current_segment)
+                
+                # 移动到下一个窗口，考虑重叠
+                start = end - self.overlap_length
         
         logger.info(f"Final segments count: {len(segments)}")
         for i, segment in enumerate(segments):

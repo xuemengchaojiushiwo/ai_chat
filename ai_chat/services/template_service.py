@@ -278,16 +278,18 @@ class TemplateService:
 ---""")
                 
                 if variables_info:
-                    # 优化点3: 优化LLM提示，使其更简洁高效
-                    prompt = f"""优化以下模板变量值，返回JSON格式：
+                    # 优化点3: 修改LLM提示，使其更尊重原始输入
+                    prompt = f"""请对以下模板变量值进行最小化优化，保持原始含义：
 
 {chr(10).join(variables_info)}
 
-要求：
-1. 保持原意，使表达更专业准确
-2. 改正语法错误，优化语言表达
-3. 数字保持原格式，日期统一为YYYY-MM-DD
-4. 内容合适时保持原文
+优化规则：
+1. 仅修正明显的语法错误
+2. 仅统一日期格式为YYYY-MM-DD
+3. 保持用户原始表达意图
+4. 不要改变用户的核心意思
+5. 不要添加额外的解释或总结
+6. 不要改变数字和关键信息
 
 仅返回JSON格式：
 {{
@@ -300,7 +302,7 @@ class TemplateService:
                         llm_start = time.time()
                         response = await asyncio.wait_for(
                             self.llm_service.chat(
-                                system="你是文本优化助手。直接返回JSON格式结果，不要添加任何解释。",
+                                system="你是文本优化助手。请最小化修改用户输入，仅修正明显错误。直接返回JSON格式结果，不要添加任何解释。",
                                 history=[],
                                 message=prompt
                             ),
@@ -311,6 +313,14 @@ class TemplateService:
                         # 优化点5: 使用通用JSON提取函数
                         try:
                             optimized_values = self._extract_json(response)
+                            # 验证优化后的值是否保持了原始含义
+                            for var_name, orig_value in template_use.variable_values.items():
+                                if var_name in optimized_values:
+                                    opt_value = optimized_values[var_name]
+                                    # 如果优化后的值完全改变了原始含义，使用原始值
+                                    if not self._is_meaning_preserved(orig_value, opt_value):
+                                        logger.warning(f"变量 {var_name} 的优化值改变了原始含义，使用原始值")
+                                        optimized_values[var_name] = orig_value
                         except ValueError:
                             logger.warning("无法解析LLM响应，使用原始值")
                             optimized_values = template_use.variable_values
@@ -360,6 +370,29 @@ class TemplateService:
             await self.db.rollback()
             logger.error(f"使用模板时出错: {str(e)}")
             raise ValueError(f"使用模板时出错: {str(e)}")
+
+    def _is_meaning_preserved(self, original: str, optimized: str) -> bool:
+        """检查优化后的文本是否保持了原始含义"""
+        # 移除空白字符和标点符号进行比较
+        def clean_text(text: str) -> str:
+            return re.sub(r'[^\w\u4e00-\u9fff]', '', text)
+        
+        orig_clean = clean_text(original)
+        opt_clean = clean_text(optimized)
+        
+        # 如果清理后的文本完全相同，说明保持了原始含义
+        if orig_clean == opt_clean:
+            return True
+            
+        # 如果优化后的文本完全改变了原始文本，返回False
+        if len(orig_clean) < 5 and orig_clean not in opt_clean:
+            return False
+            
+        # 计算文本相似度
+        similarity = len(set(orig_clean) & set(opt_clean)) / len(set(orig_clean) | set(opt_clean))
+        
+        # 如果相似度低于0.5，认为含义发生了显著改变
+        return similarity >= 0.5
 
     def _extract_variables(self, content: str) -> List[str]:
         """从内容中提取变量名"""

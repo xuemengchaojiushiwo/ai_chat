@@ -42,6 +42,21 @@ OPENAI_API_BASE = "https://geekai.co/api/v1"
 OPENAI_EMBEDDING_URL = f"{OPENAI_API_BASE}/embeddings"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+# 文档处理配置
+DOCUMENT_PROCESSING = {
+    "max_segment_length": 500,  # 每个段落的最大字符数
+    "overlap_length": 50,       # 段落之间的重叠字符数
+    "min_segment_length": 100,   # 最小段落长度
+    "max_segments_per_page": 10 # 每页最大段落数
+}
+
+# 向量检索配置
+VECTOR_RETRIEVAL = {
+    "similarity_threshold": 0.3,  # 相似度阈值
+    "max_results": 5,            # 最大返回结果数
+    "min_similarity": 0.1        # 最小相似度
+}
+
 class Settings(BaseSettings):
     # 数据库配置
     DATABASE_URL: str = DATABASE_URL
@@ -85,6 +100,12 @@ class Settings(BaseSettings):
     
     # 应用配置
     DEBUG: bool = True
+    
+    # 文档处理配置
+    DOCUMENT_PROCESSING: dict = DOCUMENT_PROCESSING
+    
+    # 向量检索配置
+    VECTOR_RETRIEVAL: dict = VECTOR_RETRIEVAL
     
     class Config:
         case_sensitive = True
