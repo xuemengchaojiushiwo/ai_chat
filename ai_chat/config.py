@@ -1,5 +1,3 @@
-import os
-from typing import Optional
 from pydantic_settings import BaseSettings
 
 # MySQL数据库配置
@@ -110,9 +108,6 @@ class Settings(BaseSettings):
     class Config:
         case_sensitive = True
 
-# 直接设置环境变量
-os.environ['SF_API_KEY'] = SF_API_KEY
-os.environ['GEEKAI_API_KEY'] = GEEKAI_API_KEY
-os.environ['DATABASE_URL'] = DATABASE_URL
+
 
 settings = Settings() 

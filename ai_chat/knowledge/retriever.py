@@ -1,21 +1,19 @@
+import logging
 from typing import List, Optional, Dict
+
+import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from ..utils.embeddings import EmbeddingFactory
-import numpy as np
-import logging
-import json
-from sklearn.metrics.pairwise import cosine_similarity
-from ..services.vector_store import vector_store
 
 # SQLAlchemy models - 只保留一个 DocumentSegment 导入
 from ..models.document import Document, DocumentSegment, DocumentWorkspace
-
 # Pydantic models
 from ..models.types import (
     DocumentResponse,
     DocumentSegmentResponse
 )
+from ..services.vector_store import vector_store
+from ..utils.embeddings import EmbeddingFactory
 
 logger = logging.getLogger(__name__)
 

@@ -1,25 +1,23 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.responses import StreamingResponse, JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete, or_, func, and_
-from typing import List, Optional
-from ..database import get_db
-from pydantic import BaseModel
-from datetime import datetime
+import logging
 import os
-import mimetypes
-from pathlib import Path
-from ..models.document import Document as DBDocument, DocumentWorkspace, DocumentSegment
-from ..models.workspace import Workspace as DBWorkspace
+import urllib.parse
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Query
+from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
+from sqlalchemy import select, func, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..database import get_db
 from ..knowledge.dataset_service import DatasetService
 from ..models.dataset import Dataset as DBDataset
-import logging
+from ..models.document import Document as DBDocument, DocumentWorkspace, DocumentSegment
 from ..models.types import Document as DocumentSchema
-import io
-import numpy as np
-from ..utils.embeddings import EmbeddingFactory, get_embedding
+from ..models.workspace import Workspace as DBWorkspace
 from ..services.vector_store import vector_store
-import urllib.parse
+from ..utils.embeddings import get_embedding
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -29,49 +27,9 @@ async def get_dataset_service(db: AsyncSession = Depends(get_db)) -> DatasetServ
     return DatasetService(db)
 
 router = APIRouter(
-    tags=["documents"]
 )
 
-# 支持的文件类型
-SUPPORTED_MIME_TYPES = {
-    # PDF文件
-    'application/pdf': '.pdf',
-    
-    # Word文件
-    'application/msword': '.doc',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-    
-    # Excel文件
-    'application/vnd.ms-excel': '.xls',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
-    
-    # 文本文件
-    'text/plain': '.txt',
-    'text/csv': '.csv',
-}
 
-# 数据模型
-class DocumentBase(BaseModel):
-    name: str
-    description: str = None
-    file_type: str
-    size: int
-
-class DocumentCreate(DocumentBase):
-    content: str
-    mime_type: str
-
-class DocumentResponse(DocumentBase):
-    id: int
-    dataset_id: int
-    content: Optional[str] = None
-    mime_type: str
-    status: str
-    error: Optional[str] = None
-    created_at: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 class ResetResponse(BaseModel):
     status: str
@@ -91,8 +49,7 @@ async def list_documents(
 ):
     """获取文档列表"""
     try:
-        service = DatasetService(db)
-        
+        # 使用异步会话查询数据库
         # 构建查询
         query = select(DBDocument)
         
@@ -212,7 +169,6 @@ async def upload_document(
 @router.post("/documents/delete")
 async def delete_document(
     document_id: int,
-    db: AsyncSession = Depends(get_db),
     dataset_service: DatasetService = Depends(get_dataset_service)
 ):
     """删除文档"""
@@ -376,55 +332,7 @@ async def get_document_content(
         logger.error(f"Error getting document content: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/documents/rebuild_vectors")
-async def rebuild_vectors(db: AsyncSession = Depends(get_db)):
-    """重建所有文档的向量表示"""
-    try:
-        # 获取所有文档段
-        result = await db.execute(select(DocumentSegment))
-        segments = result.scalars().all()
-        logger.info(f"Found {len(segments)} segments to process")
-        
-        # 清空现有的向量存储
-        try:
-            vector_store.collection.delete(ids=[str(segment.id) for segment in segments])
-            logger.info("Cleared existing vectors")
-        except Exception as e:
-            logger.warning(f"Error clearing vectors: {e}")
-        
-        # 批量处理文档段
-        batch_size = 10  # 每批处理10个文档
-        for i in range(0, len(segments), batch_size):
-            batch = segments[i:i + batch_size]
-            try:
-                # 准备批量数据
-                ids = [str(segment.id) for segment in batch]
-                texts = [segment.content for segment in batch]
-                metadatas = [{"segment_id": segment.id} for segment in batch]
-                
-                # 批量生成向量
-                embeddings = await get_embedding(texts)
-                
-                # 添加到向量存储
-                await vector_store.add_embeddings(
-                    ids=ids,
-                    embeddings=embeddings,
-                    documents=texts,
-                    metadatas=metadatas
-                )
-                logger.info(f"Processed batch of {len(batch)} segments")
-            except Exception as e:
-                logger.error(f"Error processing batch: {e}")
-                continue
-        
-        return {
-            "status": "success",
-            "message": f"Successfully rebuilt vectors for {len(segments)} segments",
-            "processed_count": len(segments)
-        }
-    except Exception as e:
-        logger.error(f"Error rebuilding vectors: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/reset", response_model=ResetResponse)
 async def reset_vector_store():

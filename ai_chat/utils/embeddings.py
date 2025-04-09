@@ -96,60 +96,7 @@ class EmbeddingFactory:
         
         return float(np.dot(emb1_normalized, emb2_normalized))
 
-    @staticmethod
-    async def get_embeddings_batch(texts: List[str], model: str = None, batch_size: int = 20) -> List[np.ndarray]:
-        """
-        批量获取文本的embedding向量
-        
-        Args:
-            texts: 文本列表
-            model: 模型名称，如果为None则使用配置中的默认模型
-            batch_size: 每批处理的文本数量
-            
-        Returns:
-            embedding向量列表
-        """
-        if not model:
-            model = settings.EMBEDDING_MODEL
-            
-        # 为 BAAI/bge-m3 模型添加特殊前缀
-        if "bge" in model.lower():
-            processed_texts = []
-            for text in texts:
-                if len(text) < 20:  # 如果是短文本，可能是查询
-                    processed_text = f"查询：{text}"
-                else:  # 如果是长文本，可能是文档
-                    processed_text = f"段落：{text}"
-                processed_texts.append(processed_text)
-            texts = processed_texts
-        
-        all_embeddings = []
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            try:
-                # 直接使用 get_embedding 函数
-                embeddings = await get_embedding(batch_texts)
-                # 确保每个 embedding 是一维列表
-                for emb in embeddings:
-                    if isinstance(emb, np.ndarray):
-                        all_embeddings.append(emb.tolist())
-                    elif isinstance(emb, list):
-                        if len(emb) == 1 and isinstance(emb[0], (list, np.ndarray)):
-                            inner_emb = emb[0]
-                            if isinstance(inner_emb, np.ndarray):
-                                all_embeddings.append(inner_emb.tolist())
-                            else:
-                                all_embeddings.append(inner_emb)
-                        else:
-                            all_embeddings.append(emb)
-                    else:
-                        all_embeddings.append(emb)
-                logger.info(f"Generated embeddings for batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
-            except Exception as e:
-                logger.error(f"Error generating embeddings for batch {i//batch_size + 1}: {str(e)}")
-                raise
-        
-        return all_embeddings
+
 
 async def get_embeddings(text: str, model: str = None, max_retries: int = 3) -> Optional[List[float]]:
     """获取文本的向量表示"""

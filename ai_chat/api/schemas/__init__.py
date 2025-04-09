@@ -14,7 +14,8 @@ from .template import (
     TemplateUse,
     TemplateUsageResponse,
     TemplateUpdate,
-    TemplateVariable
+    TemplateVariable,
+    TemplateVariableUpdate
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     'TemplateUsageResponse',
     'TemplateUpdate',
     'TemplateVariable',
+    'TemplateVariableUpdate',
 ] 

@@ -1,23 +1,23 @@
-from typing import List, Dict, Optional, Tuple, Any
-from sqlalchemy.orm import Session
-import re
-from datetime import datetime
-import json
-from sqlalchemy import select
-import time
-import logging
-import functools
 import asyncio
+import json
+import logging
+import re
+import time
 from collections import OrderedDict
+from datetime import datetime
+from typing import List, Dict, Optional
 
-from ..models.template import Template
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from ..api.schemas.template import (
     TemplateCreate,
-    TemplateResponse,
     TemplateUse,
-    TemplateUsageResponse
+    TemplateUsageResponse,
+    TemplateVariable
 )
 from ..chat.llm_factory import get_llm_service
+from ..models.template import Template
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ class TemplateService:
                             {"role": "system", "content": "你是一个JSON生成器。只返回JSON格式的数据，不要添加任何其他内容。"},
                             {"role": "user", "content": prompt}
                         ]), 
-                        timeout=30.0  # 30秒超时
+                        timeout=60.0  # 60秒超时
                     )
                     llm_elapsed = time.time() - llm_start_time
                     logger.info(f"LLM响应时间: {llm_elapsed:.2f}秒")
@@ -137,11 +137,44 @@ class TemplateService:
                 except asyncio.TimeoutError:
                     logger.warning("LLM请求超时，使用基本模板")
                     # 超时时使用基本模板结构
+                    template_name = template_data.description[:20]
+                    
+                    # 根据描述中的关键词生成更合适的模板内容
+                    content = "模板内容 - 请编辑"
+                    prompt_template = "<div>模板内容 - 请编辑</div>"
+                    variables = []
+                    
+                    # 检查描述中是否包含特定关键词，并生成相应的模板
+                    if "会议" in template_data.description:
+                        content = """【会议通知】\n\n主题：{meeting_title}\n\n时间：{meeting_time}\n\n地点：{meeting_location}\n\n参会人员：{attendees}\n\n会议议程：\n{agenda}\n\n注意事项：\n1. 请准时参加\n2. 请提前准备相关材料\n3. 如有特殊情况请提前请假\n\n联系人：{contact_person}\n电话：{contact_phone}"""
+                        prompt_template = f"<div>{content}</div>"
+                        variables = [
+                            {"name": "meeting_title", "description": "会议主题"},
+                            {"name": "meeting_time", "description": "会议时间"},
+                            {"name": "meeting_location", "description": "会议地点"},
+                            {"name": "attendees", "description": "参会人员"},
+                            {"name": "agenda", "description": "会议议程"},
+                            {"name": "contact_person", "description": "联系人"},
+                            {"name": "contact_phone", "description": "联系电话"}
+                        ]
+                    elif "活动" in template_data.description or "推广" in template_data.description:
+                        content = """【活动通知】\n\n活动名称：{event_name}\n\n活动时间：{event_time}\n\n活动地点：{event_location}\n\n活动内容：\n{event_description}\n\n参与方式：{participation_method}\n\n注意事项：\n1. 请提前报名\n2. 请准时参加\n3. 如有疑问请联系我们\n\n联系人：{contact_person}\n电话：{contact_phone}"""
+                        prompt_template = f"<div>{content}</div>"
+                        variables = [
+                            {"name": "event_name", "description": "活动名称"},
+                            {"name": "event_time", "description": "活动时间"},
+                            {"name": "event_location", "description": "活动地点"},
+                            {"name": "event_description", "description": "活动内容"},
+                            {"name": "participation_method", "description": "参与方式"},
+                            {"name": "contact_person", "description": "联系人"},
+                            {"name": "contact_phone", "description": "联系电话"}
+                        ]
+                    
                     result = {
-                        "name": template_data.description[:20],
-                        "content": "模板内容 - 请编辑",
-                        "prompt_template": "<div>模板内容 - 请编辑</div>",
-                        "variables": [],
+                        "name": template_name,
+                        "content": content,
+                        "prompt_template": prompt_template,
+                        "variables": variables,
                         "category": "通用",
                         "description": template_data.description,
                         "style": "",
@@ -244,25 +277,113 @@ class TemplateService:
             "usage_count": template.usage_count
         } for template in templates]
 
+    async def update_template_variables(self, template_id: int, operation: str, variable: TemplateVariable) -> Template:
+        """更新模板变量 - 添加或删除单个变量"""
+        try:
+            # 获取模板
+            query = select(Template).where(Template.id == template_id)
+            result = await self.db.execute(query)
+            template = result.scalar_one_or_none()
+            
+            if not template:
+                raise ValueError("Template not found")
+            
+            # 获取当前变量列表
+            current_variables = template.variables.get("variables", [])
+            logger.info(f"当前变量列表: {current_variables}")
+            
+            if operation == "add":
+                # 将 TemplateVariable 转换为字典
+                new_variable = {
+                    "name": variable.name,
+                    "description": variable.description,
+                    "required": variable.required
+                }
+                
+                # 检查变量名是否已存在
+                existing_var_index = next((i for i, var in enumerate(current_variables) 
+                                        if var["name"] == variable.name), -1)
+                
+                if existing_var_index >= 0:
+                    # 如果变量已存在，更新它
+                    current_variables[existing_var_index] = new_variable
+                    logger.info(f"更新已存在的变量: {new_variable}")
+                else:
+                    # 如果变量不存在，添加它
+                    current_variables.append(new_variable)
+                    logger.info(f"添加新变量: {new_variable}")
+            elif operation == "remove":
+                # 删除指定名称的变量
+                original_length = len(current_variables)
+                current_variables = [
+                    var for var in current_variables
+                    if var["name"] != variable.name
+                ]
+                if len(current_variables) < original_length:
+                    logger.info(f"删除变量: {variable.name}")
+                else:
+                    logger.warning(f"未找到要删除的变量: {variable.name}")
+            else:
+                raise ValueError("Invalid operation. Must be 'add' or 'remove'")
+            
+            # 更新模板中的变量列表
+            template.variables = {"variables": current_variables}
+            logger.info(f"更新后的变量列表: {template.variables}")
+            
+            # 更新模板内容和 prompt_template 中的变量引用
+            if operation == "remove":
+                # 如果是删除操作，从内容中移除对应的变量
+                template.content = re.sub(r'\{' + variable.name + r'\}(\s*\n?)', '', template.content)
+                template.prompt_template = re.sub(r'\{' + variable.name + r'\}(\s*\n?)', '', template.prompt_template)
+            
+            # 更新版本号和更新时间
+            template.version += 1
+            template.updated_at = datetime.utcnow()
+            
+            # 提交更改
+            await self.db.commit()
+            
+            # 重新获取模板以确保数据是最新的
+            result = await self.db.execute(query)
+            updated_template = result.scalar_one_or_none()
+            
+            if not updated_template:
+                raise ValueError("Failed to retrieve updated template")
+            
+            return {
+                "id": updated_template.id,
+                "name": updated_template.name,
+                "description": updated_template.description,
+                "content": updated_template.content,
+                "prompt_template": updated_template.prompt_template,
+                "variables": updated_template.variables["variables"],
+                "category": updated_template.category,
+                "author": updated_template.author,
+                "created_at": updated_template.created_at,
+                "updated_at": updated_template.updated_at,
+                "version": updated_template.version,
+                "status": updated_template.status,
+                "usage_count": updated_template.usage_count
+            }
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"更新模板变量时出错: {str(e)}")
+            raise ValueError(f"更新模板变量时出错: {str(e)}")
+
     async def use_template(self, template_id: int, template_use: TemplateUse) -> TemplateUsageResponse:
         """使用模板生成内容 - 性能优化版本"""
         start_time = time.time()
         logger.info(f"开始使用模板 {template_id} 生成内容")
         
-        # 优化点1: 异步并行获取模板数据
-        template_data_task = asyncio.create_task(self.get_template(template_id))
-        
         try:
-            # 等待模板数据
-            template_data = await template_data_task
+            # 获取模板数据
+            template_data = await self.get_template(template_id)
             if not template_data:
                 raise ValueError("Template not found")
                 
             # 获取模板变量定义
             variables = template_data["variables"]
-            var_definitions = {var["name"]: var["description"] for var in variables}
             
-            # 优化点2: 跳过不必要的LLM调用
             # 如果没有变量或所有变量都为空，直接使用原始值
             if not template_use.variable_values or all(not val for val in template_use.variable_values.values()):
                 logger.info("跳过变量优化，使用原始值")
@@ -271,25 +392,32 @@ class TemplateService:
                 # 构建包含所有变量的优化提示词
                 variables_info = []
                 for var_name, var_value in template_use.variable_values.items():
-                    if var_name in var_definitions:
+                    var_def = next((var for var in variables if var["name"] == var_name), None)
+                    if var_def:
                         variables_info.append(f"""变量名：{var_name}
-描述：{var_definitions[var_name]}
+描述：{var_def["description"]}
 当前值：{var_value}
 ---""")
                 
                 if variables_info:
-                    # 优化点3: 修改LLM提示，使其更尊重原始输入
-                    prompt = f"""请对以下模板变量值进行最小化优化，保持原始含义：
+                    # 修改LLM提示，使其更智能地优化用户输入
+                    prompt = f"""请对以下模板变量值进行优化，在保持原意的基础上改善表达：
 
 {chr(10).join(variables_info)}
 
 优化规则：
-1. 仅修正明显的语法错误
-2. 仅统一日期格式为YYYY-MM-DD
-3. 保持用户原始表达意图
-4. 不要改变用户的核心意思
-5. 不要添加额外的解释或总结
-6. 不要改变数字和关键信息
+1. 修正语法错误和标点符号使用
+2. 统一日期格式为YYYY-MM-DD
+3. 删除多余的标点符号
+4. 优化语句通顺性
+5. 保持用户原始表达的核心意图
+6. 可以适当扩充语义，让表达更完整
+7. 不要丢失关键信息
+8. 对于空的变量，保持为空
+
+示例：
+输入：多日未见，，，。聚贤阁一句
+优化后：多日未见，相约聚贤阁一聚
 
 仅返回JSON格式：
 {{
@@ -297,12 +425,11 @@ class TemplateService:
     "变量名2": "优化后的值2"
 }}"""
 
-                    # 优化点4: 添加超时控制
                     try:
                         llm_start = time.time()
                         response = await asyncio.wait_for(
                             self.llm_service.chat(
-                                system="你是文本优化助手。请最小化修改用户输入，仅修正明显错误。直接返回JSON格式结果，不要添加任何解释。",
+                                system="你是一个专业的文本优化助手。你的任务是在保持原意的基础上，改善文本的表达，使其更加通顺、规范。",
                                 history=[],
                                 message=prompt
                             ),
@@ -310,7 +437,6 @@ class TemplateService:
                         )
                         logger.info(f"LLM响应时间: {time.time() - llm_start:.2f}秒")
                         
-                        # 优化点5: 使用通用JSON提取函数
                         try:
                             optimized_values = self._extract_json(response)
                             # 验证优化后的值是否保持了原始含义
@@ -330,27 +456,29 @@ class TemplateService:
                 else:
                     optimized_values = template_use.variable_values
                     
-            # 优化点6: 更高效的变量替换
+            # 更高效的变量替换
             content = template_data["prompt_template"]
             # 预编译正则表达式
             var_pattern = re.compile(r'\{([^}]+)\}')
             # 一次性替换所有变量
             matches = var_pattern.findall(content)
             for var_name in matches:
-                if var_name in optimized_values and var_name in var_definitions:
-                    content = content.replace(f"{{{var_name}}}", optimized_values[var_name])
+                # 不管变量是否在 optimized_values 中都替换
+                value = optimized_values.get(var_name, "")
+                content = content.replace(f"{{{var_name}}}", value)
             
-            # 优化点7: 异步更新使用次数
-            async def update_usage_count():
-                query = select(Template).where(Template.id == template_id)
-                result = await self.db.execute(query)
-                template = result.scalar_one_or_none()
-                if template:
-                    template.usage_count += 1
-                    await self.db.commit()
+            # 清理多余的空行
+            content = re.sub(r'\n\s*\n', '\n\n', content)
+            content = content.strip()
             
-            # 不等待更新完成，让它在后台运行
-            asyncio.create_task(update_usage_count())
+            # 更新使用次数
+            query = select(Template).where(Template.id == template_id)
+            result = await self.db.execute(query)
+            template = result.scalar_one_or_none()
+            if template:
+                template.usage_count += 1
+                template.updated_at = datetime.utcnow()
+                await self.db.commit()
             
             # 构建响应
             response = {

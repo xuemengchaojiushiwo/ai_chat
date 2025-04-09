@@ -1,32 +1,24 @@
-from typing import List, Optional, Dict, Union
-from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy.orm import Session
 import json
 import logging
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import List, Optional, Dict
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
+from .conversation import ConversationManager
+from .llm_factory import LLMFactory
+from ..knowledge.retriever import Retriever
 # SQLAlchemy models
 from ..models.dataset import Conversation as DBConversation, Message
 from ..models.document import DocumentSegment
-
 # Pydantic models
 from ..models.types import (
-    ConversationCreate,
     MessageCreate,
     ConversationResponse,
-    MessageResponse,
-    Conversation as ConversationModel
+    MessageResponse
 )
-
-from .conversation import ConversationManager
-from ..knowledge.retriever import Retriever
-from .prompt_builder import PromptBuilder
-import aiohttp
-from ..config import settings
-import httpx
-from contextlib import asynccontextmanager
-from .llm_factory import LLMFactory
 
 logger = logging.getLogger(__name__)
 
@@ -287,9 +279,6 @@ AI：{ai_response}
         processed_docs.sort(key=lambda x: x.get('similarity', 0), reverse=True)
         return processed_docs[:self.default_retrieval_config.top_k]
 
-    async def _calculate_similarity(self, doc_content: str, query: str) -> float:
-        """计算文档与查询的相似度 - 已弃用，现在使用向量检索的相似度分数"""
-        return 0.0  # 不再使用这个方法
 
     def _build_system_prompt(self, relevant_docs: List[Dict]) -> str:
         """构建系统提示"""

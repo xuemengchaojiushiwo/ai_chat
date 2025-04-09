@@ -229,34 +229,7 @@ async def delete_conversation(
 
 
 
-class GenerateTitleRequest(BaseModel):
-    message: str
 
-class GenerateTitleResponse(BaseModel):
-    title: str
-
-@router.post("/generate_title", response_model=GenerateTitleResponse)
-async def generate_title(request: GenerateTitleRequest, db: AsyncSession = Depends(get_db)):
-    """根据用户的第一条消息生成对话标题"""
-    try:
-        service = ConversationService(db)
-        # 构建提示词
-        prompt = f"""请为以下对话生成一个简短的标题（不超过15个字）。标题应该概括用户的主要问题或意图。
-用户的问题是：{request.message}
-请直接返回标题，不要包含任何其他内容。"""
-        
-        # 调用大模型生成标题
-        message = await service.send_message(0, prompt, use_rag=False)
-        title = message.content.strip().strip('"').strip()
-        
-        if not title:
-            # 如果生成失败，使用消息的前15个字符
-            title = request.message[:15] + '...' if len(request.message) > 15 else request.message
-            
-        return {"title": title}
-    except Exception as e:
-        logger.error(f"Error generating title: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate title: {str(e)}")
 
 # 注册路由
 app.include_router(workspace_router, prefix="/api/v1", tags=["工作空间管理"])

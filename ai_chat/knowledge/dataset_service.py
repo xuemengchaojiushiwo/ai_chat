@@ -3,10 +3,13 @@ import io
 import json
 import logging
 import os
-from typing import List, Optional, BinaryIO, Any
+from typing import List, Optional, BinaryIO, Any, Dict, Tuple
 
 import PyPDF2
 import numpy as np
+import fitz  # PyMuPDF
+from PIL import Image
+import pytesseract
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,67 +28,15 @@ class DatasetService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self.embedding_factory = EmbeddingFactory()
-        self.logger = logging.getLogger(__name__)  # 添加 logger 初始化
+        self.logger = logging.getLogger(__name__)
         self.max_segment_length = DOCUMENT_PROCESSING["max_segment_length"]
         self.overlap_length = DOCUMENT_PROCESSING["overlap_length"]
         self.min_segment_length = DOCUMENT_PROCESSING["min_segment_length"]
         self.max_segments_per_page = DOCUMENT_PROCESSING["max_segments_per_page"]
         
-    async def get_datasets(self) -> List[DBDataset]:
-        """获取所有知识库列表"""
-        result = await self.db.execute(select(DBDataset))
-        return result.scalars().all()
-        
-    async def create_dataset(self, name: str, description: Optional[str] = None) -> DBDataset:
-        """创建新的知识库"""
-        dataset = DBDataset(
-            name=name,
-            description=description
-        )
-        self.db.add(dataset)
-        await self.db.commit()
-        await self.db.refresh(dataset)
-        return dataset
 
-    async def get_documents(self) -> List[DBDocument]:
-        """获取所有文档"""
-        result = await self.db.execute(select(DBDocument))
-        return result.scalars().all()
 
-    async def get_document(self, document_id: int) -> Optional[DBDocument]:
-        """获取单个文档"""
-        result = await self.db.execute(
-            select(DBDocument).filter(DBDocument.id == document_id)
-        )
-        return result.scalar_one_or_none()
 
-    async def _extract_text_from_pdf(self, file: BinaryIO) -> str:
-        """从PDF文件中提取文本"""
-        try:
-            # 读取PDF文件
-            pdf_content = file.read()
-            logger.info(f"Read PDF file content: {len(pdf_content)} bytes")
-            
-            pdf_file = io.BytesIO(pdf_content)
-            
-            # 使用PyPDF2读取PDF
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            logger.info(f"PDF has {len(pdf_reader.pages)} pages")
-            
-            # 提取所有页面的文本
-            text_content = []
-            for i, page in enumerate(pdf_reader.pages):
-                page_text = page.extract_text()
-                logger.info(f"Page {i+1} extracted text length: {len(page_text)}")
-                text_content.append(page_text)
-            
-            final_text = "\n".join(text_content)
-            logger.info(f"Total extracted text length: {len(final_text)}")
-            return final_text
-            
-        except Exception as e:
-            logger.error(f"Error extracting text from PDF: {str(e)}")
-            raise
 
     def _convert_to_native_types(self, obj):
         """递归转换numpy类型为Python原生类型"""
@@ -135,6 +86,9 @@ class DatasetService:
         name, ext = os.path.splitext(original_name)
         return f"{name}_v{version}_{file_hash[:8]}{ext}"
 
+
+
+
     async def process_document(
         self,
         file: Any,
@@ -144,56 +98,34 @@ class DatasetService:
     ) -> DBDocument:
         """处理上传的文档"""
         try:
-            logger.info(f"Starting to process document: {filename} with mime type: {mime_type}")
+            logger.info(f"开始处理文档: {filename}")
             
-            # 获取默认数据集
+            # 获取数据集
             result = await self.db.execute(select(DBDataset).filter(DBDataset.id == dataset_id))
             dataset = result.scalar_one_or_none()
             if not dataset:
                 dataset = DBDataset(name="default", description="Default dataset")
                 self.db.add(dataset)
                 await self.db.commit()
-                logger.info("Created default dataset")
-
-            # 获取文件大小
-            file.seek(0, 2)  # 移动到文件末尾
-            file_size = file.tell()  # 获取文件大小
-            file.seek(0)  # 重置文件指针到开头
-            logger.info(f"File size: {file_size} bytes")
+                logger.info("创建默认数据集")
 
             # 计算文件哈希值
             file_hash = await self._calculate_file_hash(file)
-            logger.info(f"File hash: {file_hash}")
-
-            # 获取下一个版本号
             version = await self._get_next_version(file_hash, filename)
-            logger.info(f"Next version: {version}")
-            
-            # 生成唯一的文件名
             unique_filename = await self._get_unique_filename(filename, file_hash, version)
             file_path = os.path.join("uploads", unique_filename)
 
-            # 保存文件到文件系统
+            # 保存文件
             with open(file_path, "wb") as f:
                 f.write(file.read())
-            logger.info(f"Saved new file to: {file_path}")
-            
-            file.seek(0)  # 重置文件指针
-
-            # 处理文件并获取文本内容和位置信息
-            content, mime_type, text_blocks = process_file(file_path)
-            logger.info(f"Processed file content length: {len(content)} characters")
-            logger.info(f"Number of text blocks: {len(text_blocks)}")
-
-            if not content.strip():
-                raise ValueError("Extracted content is empty")
+            file.seek(0)
 
             # 创建文档记录
             document = DBDocument(
                 name=filename,
                 file_path=file_path,
                 file_hash=file_hash,
-                size=file_size,
+                size=file.tell(),
                 mime_type=mime_type,
                 version=version,
                 dataset_id=dataset.id,
@@ -202,7 +134,14 @@ class DatasetService:
             self.db.add(document)
             await self.db.commit()
             await self.db.refresh(document)
-            logger.info(f"Created document record with ID: {document.id}")
+
+            # 处理文件并获取文本内容和位置信息
+            content, mime_type, text_blocks = process_file(file_path)
+            logger.info(f"Processed file content length: {len(content)} characters")
+            logger.info(f"Number of text blocks: {len(text_blocks)}")
+
+            if not content.strip():
+                raise ValueError("Extracted content is empty")
 
             # 按页面组织文本块
             page_blocks = {}
@@ -217,10 +156,36 @@ class DatasetService:
             embeddings_batch = []
             ids_batch = []
             documents_batch = []
-            
+
+            # 如果没有文本块，将整个内容作为一个块处理
+            if not page_blocks:
+                logger.info("No text blocks found, processing entire content as one block")
+                if mime_type == 'text/plain':
+                    # 对于文本文档，我们使用行号作为定位依据
+                    lines = content.split('\n')
+                    line_blocks = []
+                    
+                    # 每10行作为一个块，这样可以更好地定位
+                    for i in range(0, len(lines), 10):
+                        block_lines = lines[i:i+10]
+                        line_blocks.append({
+                            'text': '\n'.join(block_lines),
+                            'page_number': 0,
+                            'line_number': i + 1,  # 使用行号作为定位依据
+                            'line_count': len(block_lines)  # 使用行数作为高度
+                        })
+                    
+                    page_blocks = {0: line_blocks}
+                else:
+                    # 对于其他类型的文档，使用默认处理方式
+                    page_blocks = {0: [{'text': content, 'page_number': 0, 'bbox_x': 0, 'bbox_y': 0, 'bbox_width': 0, 'bbox_height': 0}]}
+
             for page_num, blocks in page_blocks.items():
                 # 按位置排序文本块
-                blocks.sort(key=lambda x: (x['bbox_y'], x['bbox_x']))
+                if mime_type == 'text/plain':
+                    blocks.sort(key=lambda x: (x.get('line_number', 0), x.get('bbox_x', 0)))
+                else:
+                    blocks.sort(key=lambda x: (x.get('bbox_y', 0), x.get('bbox_x', 0)))
                 
                 # 合并同一页面的文本
                 page_text = "\n".join(block['text'] for block in blocks)
@@ -246,25 +211,47 @@ class DatasetService:
                             if isinstance(embedding, np.ndarray):
                                 embedding = embedding.tolist()
                     
-                    logger.info(f"Embedding type: {type(embedding)}, shape/length: {len(embedding) if isinstance(embedding, list) else 'unknown'}")
-                    
                     # 找到段落对应的文本块
                     matching_blocks = []
                     for block in blocks:
                         if block['text'] in segment:
                             matching_blocks.append(block)
                     
-                    # 如果找到匹配的块，计算合并后的边界框
-                    if matching_blocks:
-                        block_info = {
-                            'page_number': page_num,  # 使用当前页码
-                            'bbox_x': min(block['bbox_x'] for block in matching_blocks),
-                            'bbox_y': min(block['bbox_y'] for block in matching_blocks),
-                            'bbox_width': max(block['bbox_x'] + block['bbox_width'] for block in matching_blocks) - min(block['bbox_x'] for block in matching_blocks),
-                            'bbox_height': max(block['bbox_y'] + block['bbox_height'] for block in matching_blocks) - min(block['bbox_y'] for block in matching_blocks)
-                        }
+                    # 根据文档类型处理定位信息
+                    if mime_type == 'text/plain':
+                        # 文本文档使用行号定位
+                        if matching_blocks:
+                            block_info = {
+                                'page_number': page_num,
+                                'line_number': matching_blocks[0].get('line_number', matching_blocks[0].get('bbox_y', 0)),
+                                'line_count': matching_blocks[0].get('line_count', matching_blocks[0].get('bbox_height', 1))
+                            }
+                        else:
+                            # 对于没有匹配块的情况，使用段落在文本中的位置
+                            line_number = content.count('\n', 0, content.find(segment)) + 1
+                            block_info = {
+                                'page_number': page_num,
+                                'line_number': line_number,
+                                'line_count': segment.count('\n') + 1
+                            }
                     else:
-                        block_info = {'page_number': page_num}  # 至少保存页码信息
+                        # PDF文档使用坐标定位
+                        if matching_blocks:
+                            block_info = {
+                                'page_number': page_num,
+                                'bbox_x': min(block['bbox_x'] for block in matching_blocks),
+                                'bbox_y': min(block['bbox_y'] for block in matching_blocks),
+                                'bbox_width': max(block['bbox_x'] + block['bbox_width'] for block in matching_blocks) - min(block['bbox_x'] for block in matching_blocks),
+                                'bbox_height': max(block['bbox_y'] + block['bbox_height'] for block in matching_blocks) - min(block['bbox_y'] for block in matching_blocks)
+                            }
+                        else:
+                            block_info = {
+                                'page_number': page_num,
+                                'bbox_x': 0,
+                                'bbox_y': 0,
+                                'bbox_width': 0,
+                                'bbox_height': 0
+                            }
                     
                     # 生成唯一的 chroma_id
                     chroma_id = f"doc_{document.id}_seg_{len(segment_records)}"
@@ -277,10 +264,10 @@ class DatasetService:
                         word_count=len(segment.split()),
                         tokens=len(segment),
                         page_number=block_info['page_number'],
-                        bbox_x=block_info.get('bbox_x'),
-                        bbox_y=block_info.get('bbox_y'),
-                        bbox_width=block_info.get('bbox_width'),
-                        bbox_height=block_info.get('bbox_height'),
+                        bbox_x=block_info.get('bbox_x', 0),
+                        bbox_y=block_info.get('bbox_y', block_info.get('line_number', 0)),
+                        bbox_width=block_info.get('bbox_width', 0),
+                        bbox_height=block_info.get('bbox_height', block_info.get('line_count', 0)),
                         chroma_id=chroma_id
                     )
                     
@@ -289,16 +276,11 @@ class DatasetService:
                     ids_batch.append(chroma_id)
                     documents_batch.append(segment)
 
-            logger.info(f"Created {len(segment_records)} segment records")
-            logger.info(f"Embeddings batch type check:")
-            for i, emb in enumerate(embeddings_batch):
-                logger.info(f"  Embedding {i}: type={type(emb)}, length={len(emb) if isinstance(emb, (list, np.ndarray)) else 'unknown'}")
-            
             # 批量保存文档片段
             self.db.add_all(segment_records)
             await self.db.commit()
-            
-            # 更新元数据批处理数据
+
+            # 准备元数据
             metadatas_batch = [
                 {
                     "document_id": str(document.id),
@@ -308,31 +290,23 @@ class DatasetService:
                 for segment_record in segment_records
             ]
 
-            # 批量添加向量到 Chroma
+            # 批量添加向量到向量存储
             try:
-                # 确保所有 embeddings 都是列表格式
-                embeddings_batch = [
-                    emb.tolist() if isinstance(emb, np.ndarray) else emb
-                    for emb in embeddings_batch
-                ]
-                
                 await vector_store.add_embeddings(
                     ids=ids_batch,
                     embeddings=embeddings_batch,
                     documents=documents_batch,
                     metadatas=metadatas_batch
                 )
-                logger.info(f"Added {len(ids_batch)} embeddings to vector store")
+                logger.info(f"成功添加 {len(ids_batch)} 个向量到向量存储")
             except Exception as e:
-                logger.error(f"Error adding embeddings to vector store: {str(e)}")
-                logger.error(f"Embeddings types: {[type(emb) for emb in embeddings_batch]}")
-                logger.error(f"First embedding example: {embeddings_batch[0][:10] if embeddings_batch else 'No embeddings'}")
+                logger.error(f"添加向量到向量存储时出错: {str(e)}")
                 raise
 
             return document
 
         except Exception as e:
-            logger.error(f"Error processing document: {str(e)}")
+            logger.error(f"处理文档时出错: {str(e)}")
             raise
 
     def _split_text(self, text: str) -> List[str]:

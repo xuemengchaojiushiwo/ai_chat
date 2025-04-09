@@ -1,12 +1,14 @@
-from sqlalchemy import create_engine, event, text
+import logging
+import os
+
+import chromadb
+import pymysql
+from chromadb.config import Settings as ChromaSettings
+from sqlalchemy import create_engine, event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+
 from .config import settings
-import os
-import pymysql
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +18,7 @@ def create_database():
         # 解析数据库URL
         db_parts = settings.DATABASE_URL.replace('mysql+pymysql://', '').split('/')
         db_name = db_parts[1].split('?')[0]  # 获取数据库名称
-        db_url_without_name = db_parts[0]  # 获取不带数据库名的连接URL
-
+        logger.info(f"Attempting to create database: {db_name}")
         # 创建到MySQL服务器的连接（不指定数据库）
         connection = pymysql.connect(
             host=settings.MYSQL_HOST,
@@ -109,10 +110,6 @@ def get_or_create_collection():
 # 创建基类
 Base = declarative_base()
 
-# Import all models
-from .models.workspace import Workgroup, Workspace
-from .models.document import Document, DocumentWorkspace, DocumentSegment
-from .models.dataset import Dataset, Conversation, Message
 
 # Async database dependency
 async def get_db():
@@ -122,13 +119,6 @@ async def get_db():
         finally:
             await session.close()
 
-# Sync database dependency
-def get_sync_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 # 初始化数据库
 async def init_db():

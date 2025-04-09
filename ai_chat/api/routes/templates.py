@@ -11,7 +11,7 @@ from ..schemas import (
     TemplateUse,
     TemplateUsageResponse,
     TemplateUpdate,
-    TemplateVariable
+    TemplateVariableUpdate
 )
 
 router = APIRouter(
@@ -55,4 +55,14 @@ async def use_template(
 ):
     """使用模板生成内容，并通过 LLM 优化"""
     service = TemplateService(db)
-    return await service.use_template(template_id, template_use) 
+    return await service.use_template(template_id, template_use)
+
+@router.post("/{template_id}/variables", response_model=TemplateResponse)
+async def update_template_variables(
+    template_id: int,
+    update: TemplateVariableUpdate,
+    db: Session = Depends(get_db)
+):
+    """更新模板变量，支持添加或删除单个变量"""
+    service = TemplateService(db)
+    return await service.update_template_variables(template_id, update.operation, update.variable) 
