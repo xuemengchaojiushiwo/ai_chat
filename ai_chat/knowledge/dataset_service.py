@@ -1,26 +1,20 @@
 import hashlib
-import io
 import json
 import logging
 import os
-from typing import List, Optional, BinaryIO, Any, Dict, Tuple
+from typing import List, BinaryIO, Any
 
-import PyPDF2
 import numpy as np
-import fitz  # PyMuPDF
-from PIL import Image
-import pytesseract
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import DOCUMENT_PROCESSING
 from ..models.dataset import Dataset as DBDataset
 from ..models.document import Document as DBDocument, DocumentSegment as DBDocumentSegment
 from ..models.workspace import Workspace as DBWorkspace
 from ..services.vector_store import vector_store
 from ..utils.embeddings import EmbeddingFactory
 from ..utils.file_processor import process_file
-from ..utils.text_splitter import split_text
-from ..config import DOCUMENT_PROCESSING
 
 logger = logging.getLogger(__name__)
 

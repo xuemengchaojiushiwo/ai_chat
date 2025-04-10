@@ -214,7 +214,7 @@ class TemplateService:
                 "description": db_template.description,
                 "content": db_template.content,
                 "prompt_template": db_template.prompt_template,
-                "variables": db_template.variables["variables"],
+                "variables": [{"name": var["name"], "description": var["description"], "required": var.get("required", True)} for var in db_template.variables["variables"]],
                 "category": db_template.category,
                 "author": db_template.author,
                 "created_at": db_template.created_at,
