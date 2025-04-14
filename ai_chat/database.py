@@ -10,6 +10,9 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 from .config import settings
 
+# 关闭SQLAlchemy的日志
+logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 def create_database():
@@ -51,7 +54,7 @@ def create_database():
 # Create async engine for MySQL with connection pool settings
 async_engine = create_async_engine(
     settings.DATABASE_URL.replace('mysql+pymysql', 'mysql+aiomysql'),
-    echo=True,
+    echo=False,  # 关闭SQL日志
     pool_pre_ping=True,
     pool_recycle=3600,
     pool_size=5,
@@ -61,7 +64,7 @@ async_engine = create_async_engine(
 # Create sync engine for initialization with connection pool settings
 engine = create_engine(
     settings.DATABASE_URL,
-    echo=True,
+    echo=False,  # 关闭SQL日志
     pool_pre_ping=True,
     pool_recycle=3600,
     pool_size=5,
@@ -113,6 +116,7 @@ Base = declarative_base()
 
 # Async database dependency
 async def get_db():
+    """获取数据库会话"""
     async with AsyncSessionLocal() as session:
         try:
             yield session

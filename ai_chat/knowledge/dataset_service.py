@@ -251,6 +251,7 @@ class DatasetService:
                     
                     # 检查是否是表格单元格
                     is_table = False
+                    is_key_value = False
                     row_y = None
                     has_numbers = False
                     has_dates = False
@@ -265,6 +266,15 @@ class DatasetService:
                                 is_table = True
                                 has_dates = True
                                 break
+                    
+                    # 检查是否是键值对表格
+                    lines = segment.split('\n')
+                    if len(lines) >= 2:
+                        # 检查是否包含冒号分隔的键值对
+                        key_value_pairs = [line for line in lines if ':' in line]
+                        if len(key_value_pairs) >= 2:
+                            is_key_value = True
+                            is_table = False  # 键值对表格不作为普通表格处理
                     
                     for block in matching_blocks:
                         if block.get('block_type') == 'table_cell':
@@ -300,11 +310,12 @@ class DatasetService:
                         chroma_id=chroma_id,
                         metadata=json.dumps({
                             'is_table': is_table,
+                            'is_key_value': is_key_value,
                             'row_y': float(row_y) if row_y is not None else None,
                             'has_numbers': has_numbers,
                             'has_dates': has_dates,
                             'table_data': table_data if table_data else None,
-                            'content_type': 'table' if is_table else 'text'
+                            'content_type': 'key_value' if is_key_value else ('table' if is_table else 'text')
                         }) if matching_blocks else None
                     )
                     

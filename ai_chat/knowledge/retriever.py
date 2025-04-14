@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,7 +85,7 @@ class Retriever:
         segment = result.scalar_one_or_none()
         return DocumentSegmentResponse.from_orm(segment) if segment else None
 
-    async def search_with_embedding(self, query: str, limit: int = 3, workspace_id: Optional[int] = None) -> List[Dict]:
+    async def search_with_embedding(self, query: str, limit: int = 5, workspace_id: Optional[int] = None) -> List[Dict]:
         """搜索相关文档段落"""
         try:
             # 1. 获取查询的向量表示
@@ -187,7 +187,7 @@ class Retriever:
                     results["distances"][0],
                     results["metadatas"][0]
                 )):
-                    # 修正相似度计算
+                    # 只使用向量相似度
                     similarity = 1 - (distance / 2)
                     
                     # 获取文档段落信息
@@ -205,22 +205,16 @@ class Retriever:
                         document = document_result.scalar_one_or_none()
                         
                         if document:
-                            # 计算文本相关性分数
-                            text_relevance = self._compute_text_relevance(query, segment.content)
-                            
-                            # 综合相似度 = 向量相似度 * 0.6 + 文本相关性 * 0.4
-                            combined_similarity = similarity * 0.6 + text_relevance * 0.4
-                            
-                            # 只有当综合相似度超过阈值时才添加结果
-                            if combined_similarity >= 0.5:  # 提高相似度阈值
-                                self.logger.info(f"Found matching segment {segment.id} from document {document.name} (ID: {document.id}) with combined similarity {combined_similarity:.4f}")
+                            # 只有当相似度超过阈值时才添加结果
+                            if similarity >= 0.4:  # 降低相似度阈值
+                                self.logger.info(f"Found matching segment {segment.id} from document {document.name} (ID: {document.id}) with similarity {similarity:.4f}")
                                 self.logger.info(f"Segment content preview: {segment.content[:100]}...")
 
                                 similarities.append({
                                     'segment_id': segment.id,
                                     'document_id': segment.document_id,
                                     'content': segment.content,
-                                    'similarity': float(combined_similarity),
+                                    'similarity': float(similarity),
                                     'document_name': document.name,
                                     'page_number': segment.page_number,
                                     'bbox_x': segment.bbox_x,
@@ -232,8 +226,8 @@ class Retriever:
             # 5. 按相似度降序排序
             similarities.sort(key=lambda x: x['similarity'], reverse=True)
             
-            # 限制返回结果数量为2个最相关的段落
-            similarities = similarities[:2]
+            # 限制返回结果数量为5个最相关的段落
+            similarities = similarities[:5]
             
             # 记录最终检索结果
             self.logger.info(f"Found {len(similarities)} relevant segments")
@@ -249,7 +243,7 @@ class Retriever:
             raise
 
     def _compute_text_relevance(self, query: str, content: str) -> float:
-        """计算文本相关性分数，考虑标题和列表的权重"""
+        """计算文本相关性分数"""
         try:
             # 将查询和内容转换为小写
             query = query.lower()
@@ -270,7 +264,7 @@ class Retriever:
             # 考虑完整短语匹配
             phrase_bonus = 0.0
             if query in content:
-                phrase_bonus = 0.3  # 降低完整短语匹配的权重
+                phrase_bonus = 0.5  # 提高完整短语匹配的权重
             
             # 检查是否是标题或列表
             is_title = any(line.startswith(('#', '##', '###')) for line in content.split('\n')) or content.isupper()
@@ -280,16 +274,16 @@ class Retriever:
             # 添加标题和列表的权重
             structure_bonus = 0.0
             if is_title:
-                structure_bonus += 0.2  # 降低标题权重
+                structure_bonus += 0.3  # 提高标题权重
             if is_list:
-                structure_bonus += 0.2
+                structure_bonus += 0.3
             
             # 计算关键词密度
             density_score = 0.0
             content_length = len(content.split())
             if content_length > 0:
                 keyword_density = len(matching_words) / content_length
-                density_score = min(0.2, keyword_density * 2)  # 降低密度分数上限
+                density_score = min(0.3, keyword_density * 3)  # 提高密度分数上限
             
             # 返回综合分数
             final_score = min(1.0, base_score + phrase_bonus + structure_bonus + density_score)
@@ -313,4 +307,90 @@ class Retriever:
             return float(similarity)
         except Exception as e:
             logger.error(f"Error computing similarity: {str(e)}")
-            return 0.0 
+            return 0.0
+
+    async def retrieve(
+        self,
+        query: str,
+        k: int = 4,
+        filter: Optional[Dict[str, Any]] = None,
+        score_threshold: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """检索相关文档片段"""
+        try:
+            # 获取向量存储
+            vector_store = await self.vector_store_factory.get_vector_store()
+            
+            # 执行检索
+            results = await vector_store.similarity_search_with_score(
+                query=query,
+                k=k,
+                filter=filter
+            )
+            
+            # 处理检索结果
+            processed_results = []
+            for doc, score in results:
+                # 如果分数低于阈值，跳过
+                if score < score_threshold:
+                    continue
+                    
+                # 获取元数据
+                metadata = doc.metadata
+                
+                # 记录chroma_id
+                chroma_id = metadata.get('chroma_id', 'unknown')
+                logger.info(f"Found document with chroma_id: {chroma_id}, score: {score}")
+                
+                # 处理表格数据
+                if metadata.get('is_table', False):
+                    # 提取表格内容
+                    content = doc.page_content
+                    lines = content.split('\n')
+                    
+                    # 查找包含查询内容的行
+                    for line in lines:
+                        if query.strip() in line:
+                            # 如果是键值对格式
+                            if '：' in line or ':' in line:
+                                key, value = line.split('：' if '：' in line else ':', 1)
+                                if query.strip() in key.strip():
+                                    processed_results.append({
+                                        'content': value.strip(),
+                                        'score': score,
+                                        'metadata': metadata,
+                                        'chroma_id': chroma_id
+                                    })
+                                    break
+                            else:
+                                # 如果不是键值对格式，返回整行
+                                processed_results.append({
+                                    'content': line.strip(),
+                                    'score': score,
+                                    'metadata': metadata,
+                                    'chroma_id': chroma_id
+                                })
+                                break
+                else:
+                    # 非表格内容处理
+                    processed_results.append({
+                        'content': doc.page_content,
+                        'score': score,
+                        'metadata': metadata,
+                        'chroma_id': chroma_id
+                    })
+            
+            # 按分数排序
+            processed_results.sort(key=lambda x: x['score'], reverse=True)
+            
+            # 记录检索结果
+            logger.info(f"Retrieved {len(processed_results)} results for query: {query}")
+            for i, result in enumerate(processed_results):
+                logger.info(f"Result {i+1} chroma_id: {result['chroma_id']}, score: {result['score']}")
+                logger.info(f"Result {i+1} content: {result['content']}")
+            
+            return processed_results
+            
+        except Exception as e:
+            logger.error(f"Error in retrieve: {str(e)}")
+            raise 
