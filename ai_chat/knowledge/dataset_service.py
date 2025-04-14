@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from typing import List, BinaryIO, Any
 
 import numpy as np
@@ -172,14 +173,14 @@ class DatasetService:
                     page_blocks = {0: line_blocks}
                 else:
                     # 对于其他类型的文档，使用默认处理方式
-                    page_blocks = {0: [{'text': content, 'page_number': 0, 'bbox_x': 0, 'bbox_y': 0, 'bbox_width': 0, 'bbox_height': 0}]}
+                    page_blocks = {0: [{'text': content, 'page_number': 0, 'position': {'x0': 0, 'y0': 0, 'x1': 0, 'y1': 0}}]}
 
             for page_num, blocks in page_blocks.items():
                 # 按位置排序文本块
                 if mime_type == 'text/plain':
-                    blocks.sort(key=lambda x: (x.get('line_number', 0), x.get('bbox_x', 0)))
+                    blocks.sort(key=lambda x: (x.get('line_number', 0), x.get('position', {}).get('x0', 0)))
                 else:
-                    blocks.sort(key=lambda x: (x.get('bbox_y', 0), x.get('bbox_x', 0)))
+                    blocks.sort(key=lambda x: (x.get('position', {}).get('y0', 0), x.get('position', {}).get('x0', 0)))
                 
                 # 合并同一页面的文本
                 page_text = "\n".join(block['text'] for block in blocks)
@@ -217,8 +218,8 @@ class DatasetService:
                         if matching_blocks:
                             block_info = {
                                 'page_number': page_num,
-                                'line_number': matching_blocks[0].get('line_number', matching_blocks[0].get('bbox_y', 0)),
-                                'line_count': matching_blocks[0].get('line_count', matching_blocks[0].get('bbox_height', 1))
+                                'line_number': matching_blocks[0].get('line_number', matching_blocks[0].get('position', {}).get('y0', 0)),
+                                'line_count': matching_blocks[0].get('line_count', matching_blocks[0].get('position', {}).get('y1', 1) - matching_blocks[0].get('position', {}).get('y0', 0))
                             }
                         else:
                             # 对于没有匹配块的情况，使用段落在文本中的位置
@@ -231,12 +232,13 @@ class DatasetService:
                     else:
                         # PDF文档使用坐标定位
                         if matching_blocks:
+                            positions = [block.get('position', {}) for block in matching_blocks]
                             block_info = {
                                 'page_number': page_num,
-                                'bbox_x': min(block['bbox_x'] for block in matching_blocks),
-                                'bbox_y': min(block['bbox_y'] for block in matching_blocks),
-                                'bbox_width': max(block['bbox_x'] + block['bbox_width'] for block in matching_blocks) - min(block['bbox_x'] for block in matching_blocks),
-                                'bbox_height': max(block['bbox_y'] + block['bbox_height'] for block in matching_blocks) - min(block['bbox_y'] for block in matching_blocks)
+                                'bbox_x': min(pos.get('x0', 0) for pos in positions),
+                                'bbox_y': min(pos.get('y0', 0) for pos in positions),
+                                'bbox_width': max(pos.get('x1', 0) for pos in positions) - min(pos.get('x0', 0) for pos in positions),
+                                'bbox_height': max(pos.get('y1', 0) for pos in positions) - min(pos.get('y0', 0) for pos in positions)
                             }
                         else:
                             block_info = {
@@ -246,6 +248,39 @@ class DatasetService:
                                 'bbox_width': 0,
                                 'bbox_height': 0
                             }
+                    
+                    # 检查是否是表格单元格
+                    is_table = False
+                    row_y = None
+                    has_numbers = False
+                    has_dates = False
+                    table_data = []
+                    
+                    # 检查文本是否包含表格特征
+                    if any(char.isdigit() for char in segment) and any(char in segment for char in ['-', '/']):
+                        # 检查是否包含日期格式
+                        date_patterns = [r'\d{2}-\d{2}-\d{4}', r'\d{2}/\d{2}/\d{4}']
+                        for pattern in date_patterns:
+                            if re.search(pattern, segment):
+                                is_table = True
+                                has_dates = True
+                                break
+                    
+                    for block in matching_blocks:
+                        if block.get('block_type') == 'table_cell':
+                            is_table = True
+                            row_y = block.get('metadata', {}).get('row_y')
+                            # 提取表格数据
+                            if 'text' in block:
+                                table_data.append({
+                                    'text': block['text'],
+                                    'position': block.get('position', {}),
+                                    'metadata': block.get('metadata', {})
+                                })
+                        if block.get('metadata', {}).get('has_numbers', False):
+                            has_numbers = True
+                        if block.get('metadata', {}).get('has_dates', False):
+                            has_dates = True
                     
                     # 生成唯一的 chroma_id
                     chroma_id = f"doc_{document.id}_seg_{len(segment_records)}"
@@ -262,7 +297,15 @@ class DatasetService:
                         bbox_y=block_info.get('bbox_y', block_info.get('line_number', 0)),
                         bbox_width=block_info.get('bbox_width', 0),
                         bbox_height=block_info.get('bbox_height', block_info.get('line_count', 0)),
-                        chroma_id=chroma_id
+                        chroma_id=chroma_id,
+                        metadata=json.dumps({
+                            'is_table': is_table,
+                            'row_y': float(row_y) if row_y is not None else None,
+                            'has_numbers': has_numbers,
+                            'has_dates': has_dates,
+                            'table_data': table_data if table_data else None,
+                            'content_type': 'table' if is_table else 'text'
+                        }) if matching_blocks else None
                     )
                     
                     segment_records.append(segment_record)
@@ -275,14 +318,28 @@ class DatasetService:
             await self.db.commit()
 
             # 准备元数据
-            metadatas_batch = [
-                {
+            metadatas_batch = []
+            for segment_record in segment_records:
+                metadata = {
                     "document_id": str(document.id),
                     "segment_id": str(segment_record.id),
                     "page_number": segment_record.page_number
                 }
-                for segment_record in segment_records
-            ]
+                
+                if segment_record.metadata:
+                    try:
+                        metadata.update(json.loads(segment_record.metadata))
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to parse metadata for segment {segment_record.id}")
+                
+                # 确保所有元数据值都是基本类型
+                for key, value in metadata.items():
+                    if value is None:
+                        metadata[key] = ""  # 将 None 转换为空字符串
+                    elif isinstance(value, (list, dict)):
+                        metadata[key] = str(value)  # 将复杂类型转换为字符串
+                
+                metadatas_batch.append(metadata)
 
             # 批量添加向量到向量存储
             try:
@@ -316,6 +373,21 @@ class DatasetService:
         for para in paragraphs:
             para = para.strip()
             if not para:
+                continue
+            
+            # 检查是否是表格数据
+            is_table = False
+            if any(char.isdigit() for char in para) and any(char in para for char in ['-', '/']):
+                # 检查是否包含日期格式
+                date_patterns = [r'\d{2}-\d{2}-\d{4}', r'\d{2}/\d{2}/\d{4}']
+                for pattern in date_patterns:
+                    if re.search(pattern, para):
+                        is_table = True
+                        break
+            
+            # 如果是表格数据，保持完整
+            if is_table:
+                segments.append(para)
                 continue
             
             # 如果段落长度小于最大长度，直接添加
