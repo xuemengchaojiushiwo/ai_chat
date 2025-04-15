@@ -269,6 +269,9 @@ AI：{ai_response}
             doc_id = doc.get('document_id', 'unknown')
             segment_id = doc.get('segment_id', 'unknown')
             
+            # 记录每个文档的相似度
+            logger.info(f"Document {doc_id} segment {segment_id} similarity: {score:.4f}")
+            
             if score > self.default_retrieval_config.score_threshold:
                 logger.info(f"Document {doc_id} segment {segment_id} accepted: similarity {score:.4f} > threshold {self.default_retrieval_config.score_threshold}")
                 processed_docs.append(doc)
@@ -277,8 +280,15 @@ AI：{ai_response}
         
         # 按相似度排序
         processed_docs.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+        
+        # 记录最终处理结果
+        logger.info(f"Processed to {len(processed_docs)} relevant documents")
+        for doc in processed_docs:
+            logger.info(f"Final document - ID: {doc.get('document_id')}, Segment: {doc.get('segment_id')}, "
+                       f"Similarity: {doc.get('similarity', 0):.4f}")
+            logger.info(f"Content preview: {doc.get('content', '')[:100]}...")
+        
         return processed_docs[:self.default_retrieval_config.top_k]
-
 
     def _build_system_prompt(self, relevant_docs: List[Dict]) -> str:
         """构建系统提示"""

@@ -143,6 +143,10 @@ class Retriever:
                         if doc_results and doc_results.get("ids") and doc_results["ids"][0]:
                             all_results.append(doc_results)
                             self.logger.info(f"Found {len(doc_results['ids'][0])} results for document {doc_id}")
+                            # 记录每个结果的相似度
+                            for i, (doc_id, distance) in enumerate(zip(doc_results["ids"][0], doc_results["distances"][0])):
+                                similarity = 1 - (distance / 2)
+                                self.logger.info(f"Result {i+1} - Document {doc_id}, Similarity: {similarity:.4f}")
                 
                 # 合并所有文档的结果
                 if all_results:
@@ -205,8 +209,8 @@ class Retriever:
                         document = document_result.scalar_one_or_none()
                         
                         if document:
-                            # 只有当相似度超过阈值时才添加结果
-                            if similarity >= 0.4:  # 降低相似度阈值
+                            # 降低相似度阈值以提高召回率
+                            if similarity >= 0.3:  # 降低相似度阈值
                                 self.logger.info(f"Found matching segment {segment.id} from document {document.name} (ID: {document.id}) with similarity {similarity:.4f}")
                                 self.logger.info(f"Segment content preview: {segment.content[:100]}...")
 
