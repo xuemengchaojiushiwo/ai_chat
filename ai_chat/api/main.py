@@ -1,22 +1,21 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, Depends, HTTPException
+import logging
+from datetime import datetime
+from typing import List
+
+from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, List
-from ai_chat.database import get_db, engine, init_db, SessionLocal
-from ai_chat.chat.conversation_service import ConversationService
-from ai_chat.knowledge.dataset_service import DatasetService
-from sqlalchemy import select
-import logging
-from ai_chat.models.types import Dataset as DatasetSchema, Conversation as ConversationModel, Message as MessageModel
-from ai_chat.models.dataset import Dataset as DBDataset, Conversation as DBConversation
-from ai_chat.api.schemas import (
-    Conversation, Message, ConversationCreate, 
-    MessageCreate, Document
-)
-from datetime import datetime
-from pydantic import BaseModel
-from ai_chat.api.workspace import router as workspace_router
+
 from ai_chat.api.document import router as document_router
+from ai_chat.api.schemas import (
+    Conversation, Message, ConversationCreate,
+    MessageCreate
+)
+from ai_chat.api.workspace import router as workspace_router
+from ai_chat.chat.conversation_service import ConversationService
+from ai_chat.database import get_db, init_db, SessionLocal
+from ai_chat.knowledge.dataset_service import DatasetService
+from ai_chat.models.dataset import Dataset as DBDataset
 from .routes.templates import router as template_router
 
 # 配置日志

@@ -1,11 +1,13 @@
+import logging
 import os
 import re
-from docx import Document as DocxDocument  # 重命名以避免冲突
-import pdfplumber
-import markdown
 from typing import Optional, Tuple, List, Dict, Any
+
+import markdown
+import pdfplumber
+from docx import Document as DocxDocument  # 重命名以避免冲突
+
 from .text_splitter import TextBlock
-import logging
 
 logger = logging.getLogger(__name__)
 

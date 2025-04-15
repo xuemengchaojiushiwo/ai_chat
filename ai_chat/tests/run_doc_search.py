@@ -1,13 +1,14 @@
 import asyncio
+import json
 import logging
+
+import numpy as np
 from sqlalchemy import select
+
 from ..database import get_db, engine
 from ..models.document import Document, DocumentSegment
-from ..utils.embeddings import EmbeddingFactory
 from ..services.vector_store import vector_store
-from ..config import settings
-import numpy as np
-import json
+from ..utils.embeddings import EmbeddingFactory
 
 # 设置日志级别
 logging.basicConfig(level=logging.DEBUG)

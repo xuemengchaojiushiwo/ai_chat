@@ -1,7 +1,8 @@
-import pytest
-import numpy as np
-from ..services.vector_store import ChromaService
 import logging
+
+import numpy as np
+
+from ..services.vector_store import ChromaService
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

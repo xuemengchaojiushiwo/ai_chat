@@ -1,6 +1,6 @@
-from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
-import re
+from typing import List, Dict, Optional, Any
+
 
 @dataclass
 class TextBlock:

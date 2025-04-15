@@ -1,9 +1,6 @@
-import asyncio
 import logging
 
 import uvicorn
-
-from ai_chat.database import engine, Base
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

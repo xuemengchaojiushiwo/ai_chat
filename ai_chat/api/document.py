@@ -2,7 +2,7 @@ import logging
 import os
 import urllib.parse
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Query
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -13,11 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..knowledge.dataset_service import DatasetService
 from ..models.dataset import Dataset as DBDataset
-from ..models.document import Document as DBDocument, DocumentWorkspace, DocumentSegment
+from ..models.document import Document as DBDocument, DocumentWorkspace
 from ..models.types import Document as DocumentSchema
 from ..models.workspace import Workspace as DBWorkspace
 from ..services.vector_store import vector_store
-from ..utils.embeddings import get_embedding
 
 # 配置日志
 logger = logging.getLogger(__name__)

@@ -1,11 +1,12 @@
-import aiohttp
-import numpy as np
-from typing import List, Union, Optional
-from ..config import settings, SF_API_KEY
-import httpx
 import logging
-import json
 import time
+from typing import List, Union, Optional
+
+import aiohttp
+import httpx
+import numpy as np
+
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,13 @@
+import asyncio
+
 import pytest
 import pytest_asyncio
-import asyncio
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from ..database import Base, get_db
+
 from ..api.main import app
-from fastapi.testclient import TestClient
+from ..database import Base, get_db
 
 # 使用内存数据库进行测试
 TEST_SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"

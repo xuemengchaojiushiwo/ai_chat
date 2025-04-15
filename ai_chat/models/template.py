@@ -1,6 +1,9 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON
 from datetime import datetime
+
+from sqlalchemy import Column, Integer, String, Text, DateTime, JSON
+
 from ..database import Base
+
 
 class Template(Base):
     __tablename__ = 'templates'

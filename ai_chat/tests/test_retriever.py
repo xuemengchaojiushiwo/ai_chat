@@ -1,7 +1,9 @@
 import pytest
+
 from ..knowledge.retriever import Retriever
 from ..models.document import Document, DocumentSegment
 from ..services.vector_store import ChromaService
+
 
 @pytest.mark.asyncio
 async def test_search_with_embedding(test_session):

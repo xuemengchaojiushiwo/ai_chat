@@ -1,12 +1,12 @@
+import logging
+
 import pytest
 import pytest_asyncio
-import logging
 from sqlalchemy import select
-from ..knowledge.dataset_service import DatasetService
-from ..utils.embeddings import EmbeddingFactory
-from ..services.vector_store import vector_store
+
 from ..models.document import Document, DocumentSegment
-from sqlalchemy.ext.asyncio import AsyncSession
+from ..services.vector_store import vector_store
+from ..utils.embeddings import EmbeddingFactory
 
 # 设置日志级别为DEBUG以查看详细信息
 logging.basicConfig(level=logging.DEBUG)

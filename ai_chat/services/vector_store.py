@@ -1,10 +1,11 @@
+import logging
+import os
+from typing import List, Dict, Any, Optional
+
 import chromadb
 from chromadb.config import Settings as ChromaSettings
+
 from ..config import settings
-import numpy as np
-import os
-import logging
-from typing import List, Dict, Any, Optional
 from ..utils.logger import vector_logger
 
 logger = logging.getLogger(__name__)

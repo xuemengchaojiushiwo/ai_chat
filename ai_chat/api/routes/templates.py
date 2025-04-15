@@ -1,18 +1,17 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Body
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ...database import get_db
-from ...services.template_service import TemplateService
 from ..schemas import (
-    TemplateBase,
     TemplateCreate,
     TemplateResponse,
     TemplateUse,
     TemplateUsageResponse,
-    TemplateUpdate,
     TemplateVariableUpdate
 )
+from ...database import get_db
+from ...services.template_service import TemplateService
 
 router = APIRouter(
     prefix="/api/v1/templates",

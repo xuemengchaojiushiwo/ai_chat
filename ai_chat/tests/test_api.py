@@ -1,10 +1,6 @@
-import pytest
-from fastapi.testclient import TestClient
-from ..api.main import app
 import os
-from pathlib import Path
 import tempfile
-from io import BytesIO
+
 
 def create_test_file(filename: str, content: str = "This is test content") -> str:
     """创建测试文件"""

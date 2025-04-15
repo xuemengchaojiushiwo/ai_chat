@@ -1,7 +1,10 @@
+from datetime import datetime
+
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.orm import relationship
-from datetime import datetime
+
 from ..database import Base
+
 
 class Dataset(Base):
     __tablename__ = "datasets"

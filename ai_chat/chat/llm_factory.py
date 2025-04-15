@@ -1,10 +1,10 @@
-import httpx
-from ..config import settings
 import logging
-import json
-from typing import List, Tuple, Optional
-import asyncio
+from typing import List, Tuple
+
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
