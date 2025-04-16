@@ -309,7 +309,39 @@ AI：{ai_response}
         used_citations = []
         
         # 查找 ###CITATIONS: 标记后的引用数组
-        if "###CITATIONS:" in response:
+        citations_pattern = r"###\s*CITATIONS:\s*(\[[\d,\s]+\])"
+        citations_match = re.search(citations_pattern, response, re.IGNORECASE)
+        
+        if citations_match:
+            try:
+                citations_text = citations_match.group(1).strip()
+                # 解析JSON数组
+                indices = json.loads(citations_text)
+                
+                # 获取引用的文档
+                for index in indices:
+                    if 1 <= index <= len(relevant_docs):  # 确保引用索引有效
+                        doc = relevant_docs[index-1]
+                        citation = {
+                            "text": doc.get('content', ''),
+                            "document_id": doc.get('document_id', ''),
+                            "segment_id": doc.get('segment_id', ''),
+                            "similarity": doc.get('similarity', 0),
+                            "index": index,
+                            "page_number": doc.get('page_number'),
+                            "bbox_x": doc.get('bbox_x'),
+                            "bbox_y": doc.get('bbox_y'),
+                            "bbox_width": doc.get('bbox_width'),
+                            "bbox_height": doc.get('bbox_height')
+                        }
+                        used_citations.append(citation)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse citations array: {e}, citations text: {citations_match.group(1)}")
+            except Exception as e:
+                logger.warning(f"Error processing citations: {str(e)}")
+                
+        # 如果正则未找到，尝试传统的拆分方法
+        elif "###CITATIONS:" in response:
             try:
                 citations_text = response.split("###CITATIONS:")[-1].strip()
                 # 解析JSON数组
@@ -332,9 +364,97 @@ AI：{ai_response}
                             "bbox_height": doc.get('bbox_height')
                         }
                         used_citations.append(citation)
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse citations array, no citations will be included")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse citations array: {e}, citations text: {citations_text}")
+            except Exception as e:
+                logger.warning(f"Error processing citations: {str(e)}")
+        
+        # 如果上述方法都没找到引用，尝试解析文本中的[数字]引用
+        if not used_citations:
+            citation_pattern = r'\[(\d+)\]'
+            citation_matches = re.findall(citation_pattern, response)
+            
+            # 去重并转换为整数
+            unique_indices = set()
+            for index_str in citation_matches:
+                try:
+                    index = int(index_str)
+                    if 1 <= index <= len(relevant_docs):  # 确保引用索引有效
+                        unique_indices.add(index)
+                except ValueError:
+                    continue
+            
+            # 获取引用的文档
+            for index in unique_indices:
+                doc = relevant_docs[index-1]
+                citation = {
+                    "text": doc.get('content', ''),
+                    "document_id": doc.get('document_id', ''),
+                    "segment_id": doc.get('segment_id', ''),
+                    "similarity": doc.get('similarity', 0),
+                    "index": index,
+                    "page_number": doc.get('page_number'),
+                    "bbox_x": doc.get('bbox_x'),
+                    "bbox_y": doc.get('bbox_y'),
+                    "bbox_width": doc.get('bbox_width'),
+                    "bbox_height": doc.get('bbox_height')
+                }
+                used_citations.append(citation)
+        
+        # 按照document_id和page_number对引用进行分组合并
+        if used_citations:
+            # 创建一个字典用于分组（先按document_id分组）
+            doc_grouped_citations = {}
+            
+            for citation in used_citations:
+                doc_id = citation.get('document_id', '')
+                page_num = citation.get('page_number')
                 
+                # 为每个文档创建一个条目
+                if doc_id not in doc_grouped_citations:
+                    doc_grouped_citations[doc_id] = {
+                        "document_id": doc_id,
+                        "pages": {}
+                    }
+                
+                # 为每个页面创建一个条目
+                if page_num not in doc_grouped_citations[doc_id]["pages"]:
+                    doc_grouped_citations[doc_id]["pages"][page_num] = {
+                        "page_number": page_num,
+                        "segments": []
+                    }
+                
+                # 添加片段到对应的页面
+                doc_grouped_citations[doc_id]["pages"][page_num]["segments"].append({
+                    "segment_id": citation.get('segment_id', ''),
+                    "text": citation.get('text', ''),
+                    "similarity": citation.get('similarity', 0),
+                    "index": citation.get('index'),
+                    "bbox_x": citation.get('bbox_x'),
+                    "bbox_y": citation.get('bbox_y'),
+                    "bbox_width": citation.get('bbox_width'),
+                    "bbox_height": citation.get('bbox_height')
+                })
+            
+            # 转换字典结构为最终的列表结构
+            merged_citations = []
+            for doc_id, doc_data in doc_grouped_citations.items():
+                # 将pages字典转为列表
+                pages_list = []
+                for _, page_data in doc_data["pages"].items():
+                    pages_list.append(page_data)
+                
+                # 按页码排序
+                pages_list.sort(key=lambda x: x["page_number"] if x["page_number"] is not None else 0)
+                
+                # 将排序后的pages替换原来的pages字典
+                doc_data["pages"] = pages_list
+                merged_citations.append(doc_data)
+            
+            logger.info(f"Extracted and merged citations into {len(merged_citations)} documents")
+            return merged_citations
+        
+        logger.info(f"Extracted {len(used_citations)} citations from response")
         return used_citations
 
     async def send_message(self, conversation_id: int, message_content: str, use_rag: bool = True) -> Message:
