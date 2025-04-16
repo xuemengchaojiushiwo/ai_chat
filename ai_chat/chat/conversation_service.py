@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional, Dict
+import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -114,6 +115,9 @@ class ConversationService:
                     title = parts[1].strip()[:20]
                     logger.info(f"Extracted title: {title}")
             
+            # 提取实际使用的引用
+            citations = await self._extract_used_citations(response_content, relevant_docs) if relevant_docs else []
+
             # 创建对话
             conversation = DBConversation(
                 title=title,
@@ -133,27 +137,10 @@ class ConversationService:
             )
             self.db.add(user_message)
 
-            # 添加AI回复消息，包含引用
-            citations = [
-                {
-                    "text": doc.get('content', ''),
-                    "document_id": doc.get('document_id', ''),
-                    "segment_id": doc.get('segment_id', ''),
-                    "similarity": doc.get('similarity', 0),
-                    "index": i + 1,
-                    "page_number": doc.get('page_number'),
-                    "bbox_x": doc.get('bbox_x'),
-                    "bbox_y": doc.get('bbox_y'),
-                    "bbox_width": doc.get('bbox_width'),
-                    "bbox_height": doc.get('bbox_height')
-                }
-                for i, doc in enumerate(relevant_docs)
-                if doc.get('similarity', 0) > self.default_retrieval_config.score_threshold
-            ]
-
+            # 添加AI回复消息
             assistant_message = Message(
                 conversation_id=conversation.id,
-                content=response_content,  # 使用清理后的响应内容
+                content=response_content,
                 role="assistant",
                 created_at=datetime.utcnow(),
                 citations=citations
@@ -291,63 +278,64 @@ AI：{ai_response}
         return processed_docs[:self.default_retrieval_config.top_k]
 
     def _build_system_prompt(self, relevant_docs: List[Dict]) -> str:
-        """构建系统提示"""
-        system_messages = [
-            "你是一个AI助手。请根据用户的问题提供准确、相关和有帮助的回答。",
-            "在回答时请遵循以下规则：",
-            "1. 使用HTML标签进行文本格式化：",
-            "   - 使用 <strong> 标签代替 ** 加粗",
-            "   - 使用 <em> 标签代替 * 斜体",
-            "   - 使用 <code> 标签代替 ` 代码",
-            "   - 使用 <pre> 标签代替 ``` 代码块",
-            "   - 使用 <ul> 和 <li> 标签代替 - 列表",
-            "   - 使用 <ol> 和 <li> 标签代替 1. 2. 等数字列表",
-            "   - 使用 <p> 标签分隔段落",
-            "   - 使用 <table>, <tr>, <th>, <td> 标签展示表格数据",
-            "2. 如果使用检索到的文档内容:",
-            "   - 必须使用[1], [2]等格式标注引用来源",
-            "   - 引用时说明信息来源,如'根据文档[1]所述...'",
-            "   - 多文档引用使用'根据文档[1]和[2]'格式",
-            "3. 引用规则：",
-            "   - 只引用相似度>0.3的文档",
-            "   - 优先引用相似度更高的文档",
-            "   - 不要编造或修改文档内容",
-            "4. 回答要求：",
-            "   - 准确、简洁、紧扣问题",
-            "   - 如无相关文档支持,说明是基于通用知识回答",
-            "   - 有把握时才引用文档内容",
-            "5. 格式要求：",
-            "   - 不要使用Markdown语法",
-            "   - 直接使用HTML标签",
-            "   - 确保所有标签正确闭合",
-            "   - 保持HTML格式的一致性",
-            "6. 表格展示规则：",
-            "   - 使用 <table class='data-table'> 作为表格容器",
-            "   - 使用 <thead> 和 <tbody> 区分表头和表体",
-            "   - 使用 <th> 标签标识表头单元格",
-            "   - 使用 <td> 标签标识数据单元格",
-            "   - 对于数字列使用 class='number' 标识",
-            "   - 对于百分比列使用 class='percentage' 标识",
-            "   - 对于日期列使用 class='date' 标识",
-            "7. 列表展示规则：",
-            "   - 无序列表使用 <ul class='bullet-list'>",
-            "   - 有序列表使用 <ol class='number-list'>",
-            "   - 列表项使用 <li> 标签",
-            "   - 嵌套列表保持正确的缩进结构"
-        ]
+        """构建系统提示词"""
+        if not relevant_docs:
+            return "你是一个AI助手，请基于你的知识回答用户的问题。"
+        
+        # 构建知识库内容
+        knowledge_base = "\n\n".join([
+            f"[{i+1}] {doc.get('content', '')}"
+            for i, doc in enumerate(relevant_docs)
+        ])
+        
+        return f"""你是一个AI助手。我会给你一些相关的文档片段作为背景知识。请基于这些知识回答用户的问题。
 
-        if relevant_docs:
-            system_messages.append("\n可用的参考文档:")
-            for i, doc in enumerate(relevant_docs, 1):
-                score = doc.get('similarity', 0)
-                content = doc.get('content', '')
-                if score > self.default_retrieval_config.score_threshold:
-                    system_messages.append(f"[{i}] {content} (相似度: {score:.2f})")
-                    system_messages.append(f"文档ID: {doc.get('document_id')} 段落ID: {doc.get('segment_id')}")
-        else:
-            system_messages.append("\n没有找到相关的参考文档。请基于通用知识回答。")
+背景知识：
+{knowledge_base}
 
-        return "\n".join(system_messages)
+回答要求：
+1. 如果你使用了背景知识中的内容，请在回答中使用引用标记，例如 [1]、[2] 等，对应上面的文档编号
+2. 只在确实使用了某个文档的内容时才标注引用
+3. 不要在回答中重复完整的文档内容，只需要用你的话总结或解释
+4. 如果背景知识不足以回答问题，请基于你自己的知识回答，无需标注引用
+5. 引用标记要放在相关内容的末尾，例如："根据分析，该产品的核心功能包括多模态输入支持[1]和实时数据处理[2]"
+6. 在回答的最后，请添加一个新行并使用 ###CITATIONS: 标记，后面跟上你实际引用的文档编号数组，例如：
+   ###CITATIONS: [1,2]
+
+请开始回答用户的问题。"""
+
+    async def _extract_used_citations(self, response: str, relevant_docs: List[Dict]) -> List[Dict]:
+        """从回答中提取实际使用的引用"""
+        used_citations = []
+        
+        # 查找 ###CITATIONS: 标记后的引用数组
+        if "###CITATIONS:" in response:
+            try:
+                citations_text = response.split("###CITATIONS:")[-1].strip()
+                # 解析JSON数组
+                indices = json.loads(citations_text)
+                
+                # 获取引用的文档
+                for index in indices:
+                    if 1 <= index <= len(relevant_docs):  # 确保引用索引有效
+                        doc = relevant_docs[index-1]
+                        citation = {
+                            "text": doc.get('content', ''),
+                            "document_id": doc.get('document_id', ''),
+                            "segment_id": doc.get('segment_id', ''),
+                            "similarity": doc.get('similarity', 0),
+                            "index": index,
+                            "page_number": doc.get('page_number'),
+                            "bbox_x": doc.get('bbox_x'),
+                            "bbox_y": doc.get('bbox_y'),
+                            "bbox_width": doc.get('bbox_width'),
+                            "bbox_height": doc.get('bbox_height')
+                        }
+                        used_citations.append(citation)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse citations array, no citations will be included")
+                
+        return used_citations
 
     async def send_message(self, conversation_id: int, message_content: str, use_rag: bool = True) -> Message:
         """发送消息并获取回复"""
@@ -412,27 +400,16 @@ AI：{ai_response}
                 message=message_content
             )
 
-            # 创建助手回复消息
-            citations = [
-                {
-                    "text": doc.get('content', ''),
-                    "document_id": doc.get('document_id', ''),
-                    "segment_id": doc.get('segment_id', ''),
-                    "similarity": doc.get('similarity', 0),
-                    "index": i + 1,
-                    "page_number": doc.get('page_number'),
-                    "bbox_x": doc.get('bbox_x'),
-                    "bbox_y": doc.get('bbox_y'),
-                    "bbox_width": doc.get('bbox_width'),
-                    "bbox_height": doc.get('bbox_height')
-                }
-                for i, doc in enumerate(relevant_docs)
-                if doc.get('similarity', 0) > self.default_retrieval_config.score_threshold
-            ]
+            # 清理响应内容，移除citations标记
+            clean_response = response.split("###CITATIONS:")[0].strip() if "###CITATIONS:" in response else response
 
+            # 提取实际使用的引用
+            citations = await self._extract_used_citations(response, relevant_docs) if relevant_docs else []
+
+            # 创建助手回复消息
             assistant_message = Message(
                 conversation_id=conversation_id,
-                content=response,
+                content=clean_response,  # 使用清理后的响应
                 role="assistant",
                 created_at=datetime.utcnow(),
                 citations=citations
