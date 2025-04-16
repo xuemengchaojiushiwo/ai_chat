@@ -41,7 +41,7 @@ class WorkspaceBase(BaseModel):
     group_id: int
 
 class WorkspaceCreate(WorkspaceBase):
-    pass
+    document_ids: Optional[List[int]] = []  # 添加文档ID列表字段
 
 class WorkspaceResponse(WorkspaceBase):
     id: int
@@ -160,22 +160,75 @@ async def list_workspaces(group_id: Optional[int] = None, db: AsyncSession = Dep
 
 @router.post("/workspaces/create", response_model=WorkspaceResponse)
 async def create_workspace(workspace: WorkspaceCreate, db: AsyncSession = Depends(get_db)):
-    """创建新工作空间"""
-    result = await db.execute(
-        select(DBWorkgroup).filter(DBWorkgroup.id == workspace.group_id)
-    )
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Workgroup not found")
+    """创建新工作空间，支持同时关联文档
     
-    db_workspace = DBWorkspace(
-        name=workspace.name,
-        description=workspace.description,
-        group_id=workspace.group_id
-    )
-    db.add(db_workspace)
-    await db.commit()
-    await db.refresh(db_workspace)
-    return db_workspace
+    Args:
+        workspace: 工作空间创建请求，包含基本信息和要关联的文档ID列表
+    """
+    try:
+        # 验证工作组是否存在
+        result = await db.execute(
+            select(DBWorkgroup).filter(DBWorkgroup.id == workspace.group_id)
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Workgroup not found")
+        
+        # 如果提供了文档ID，验证所有文档是否存在
+        if workspace.document_ids:
+            for doc_id in workspace.document_ids:
+                doc_result = await db.execute(
+                    select(Document).filter(Document.id == doc_id)
+                )
+                if not doc_result.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Document {doc_id} not found"
+                    )
+        
+        # 创建工作空间
+        db_workspace = DBWorkspace(
+            name=workspace.name,
+            description=workspace.description,
+            group_id=workspace.group_id
+        )
+        db.add(db_workspace)
+        await db.flush()  # 刷新以获取工作空间ID
+        
+        # 创建文档关联
+        if workspace.document_ids:
+            for doc_id in workspace.document_ids:
+                doc_workspace = DocumentWorkspace(
+                    document_id=doc_id,
+                    workspace_id=db_workspace.id
+                )
+                db.add(doc_workspace)
+        
+        await db.commit()
+        await db.refresh(db_workspace)
+        
+        # 获取关联的文档数量
+        doc_count = await db.execute(
+            select(func.count(DocumentWorkspace.document_id))
+            .filter(DocumentWorkspace.workspace_id == db_workspace.id)
+        )
+        
+        return WorkspaceResponse(
+            id=db_workspace.id,
+            name=db_workspace.name,
+            description=db_workspace.description,
+            group_id=db_workspace.group_id,
+            created_at=db_workspace.created_at,
+            updated_at=db_workspace.updated_at,
+            document_count=doc_count.scalar() or 0
+        )
+        
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error creating workspace: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/workspaces/update", response_model=WorkspaceResponse)
 async def update_workspace(workspace: WorkspaceUpdateRequest, db: AsyncSession = Depends(get_db)):
