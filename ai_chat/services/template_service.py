@@ -7,7 +7,7 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import List, Dict, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..api.schemas.template import (
@@ -54,7 +54,13 @@ class TemplateService:
         # 尝试直接解析整个字符串
         text = text.strip()
         try:
-            return json.loads(text)
+            result = json.loads(text)
+            # 确保variables中的每个变量都有required字段
+            if "variables" in result:
+                for var in result["variables"]:
+                    if "required" not in var:
+                        var["required"] = True  # 默认为True
+            return result
         except json.JSONDecodeError:
             pass
         
@@ -190,22 +196,44 @@ class TemplateService:
                 logger.warning(f"模板缺少必需的字段，已添加默认值")
             
             # 优化点3: 并行处理数据库操作
-            # 创建模板对象
+            # 创建模板对象，确保variables中包含required字段
+            processed_variables = []
+            for var in result.get("variables", []):
+                processed_variables.append({
+                    "name": var["name"],
+                    "description": var["description"],
+                    "required": var.get("required", True)  # 默认为True
+                })
+
+            # 确保variables字段是一个有效的JSON对象
+            variables_json = {
+                "variables": processed_variables
+            }
+
             db_template = Template(
                 name=result.get("name", template_data.description[:20]),
                 description=result.get("description", template_data.description),
                 content=result.get("content", ""),
                 prompt_template=result.get("prompt_template", ""),
-                variables={"variables": result.get("variables", [])},
+                variables=variables_json,  # 使用完整的JSON对象
                 category=result.get("category", "通用"),
                 author=result.get("author", "AI助手"),
                 style=result.get("style", "")
             )
             
+            # 数据库操作前确认variables字段的格式
+            logger.info(f"保存到数据库的variables字段: {db_template.variables}")
+            
             # 数据库操作
             self.db.add(db_template)
             await self.db.commit()
             await self.db.refresh(db_template)
+            
+            # 验证保存后的数据
+            saved_variables = db_template.variables.get("variables", [])
+            for var in saved_variables:
+                if "required" not in var:
+                    logger.error(f"变量 {var['name']} 缺少required字段")
             
             # 构造响应
             response_data = {
@@ -214,7 +242,7 @@ class TemplateService:
                 "description": db_template.description,
                 "content": db_template.content,
                 "prompt_template": db_template.prompt_template,
-                "variables": [{"name": var["name"], "description": var["description"], "required": var.get("required", True)} for var in db_template.variables["variables"]],
+                "variables": saved_variables,  # 使用保存后的变量列表
                 "category": db_template.category,
                 "author": db_template.author,
                 "created_at": db_template.created_at,
@@ -239,13 +267,19 @@ class TemplateService:
         template = result.scalar_one_or_none()
         
         if template:
+            # 确保返回的变量列表中每个变量都有required字段
+            variables = template.variables.get("variables", [])
+            for var in variables:
+                if "required" not in var:
+                    var["required"] = True  # 添加默认值
+            
             return {
                 "id": template.id,
                 "name": template.name,
                 "description": template.description,
                 "content": template.content,
                 "prompt_template": template.prompt_template,
-                "variables": template.variables["variables"],  # 返回时只返回变量列表
+                "variables": variables,  # 返回处理后的变量列表
                 "category": template.category,
                 "author": template.author,
                 "created_at": template.created_at,
@@ -277,8 +311,8 @@ class TemplateService:
             "usage_count": template.usage_count
         } for template in templates]
 
-    async def update_template_variables(self, template_id: int, operation: str, variable: TemplateVariable) -> Template:
-        """更新模板变量 - 添加或删除单个变量"""
+    async def update_template_variables(self, template_id: int, operation: str, variable: TemplateVariable, old_name: Optional[str] = None) -> Template:
+        """更新模板变量 - 添加、删除或更新单个变量"""
         try:
             # 获取模板
             query = select(Template).where(Template.id == template_id)
@@ -288,83 +322,185 @@ class TemplateService:
             if not template:
                 raise ValueError("Template not found")
             
-            # 获取当前变量列表
-            current_variables = template.variables.get("variables", [])
+            # 获取当前变量列表，确保是一个列表
+            current_variables = template.variables.get("variables", []) if template.variables else []
             logger.info(f"当前变量列表: {current_variables}")
             
             if operation == "add":
-                # 将 TemplateVariable 转换为字典
+                # 将 TemplateVariable 转换为字典，确保包含required字段
                 new_variable = {
                     "name": variable.name,
                     "description": variable.description,
-                    "required": variable.required
+                    "required": variable.required if variable.required is not None else True
                 }
                 
                 # 检查变量名是否已存在
-                existing_var_index = next((i for i, var in enumerate(current_variables) 
-                                        if var["name"] == variable.name), -1)
+                if any(var["name"] == variable.name for var in current_variables):
+                    raise ValueError(f"Variable {variable.name} already exists")
                 
-                if existing_var_index >= 0:
-                    # 如果变量已存在，更新它
-                    current_variables[existing_var_index] = new_variable
-                    logger.info(f"更新已存在的变量: {new_variable}")
-                else:
-                    # 如果变量不存在，添加它
-                    current_variables.append(new_variable)
-                    logger.info(f"添加新变量: {new_variable}")
+                # 添加新变量
+                current_variables.append(new_variable)
+                logger.info(f"添加新变量: {new_variable}")
+                
+                # 更新模板中的变量列表
+                new_variables = {
+                    "variables": current_variables
+                }
+                
+                # 使用 SQLAlchemy 更新
+                stmt = (
+                    update(Template)
+                    .where(Template.id == template_id)
+                    .values(
+                        variables=new_variables,
+                        version=template.version + 1,
+                        updated_at=datetime.utcnow()
+                    )
+                )
+                await self.db.execute(stmt)
+                await self.db.commit()
+                
+                # 返回更新后的数据
+                return {
+                    "id": template.id,
+                    "name": template.name,
+                    "description": template.description,
+                    "content": template.content,
+                    "prompt_template": template.prompt_template,
+                    "variables": current_variables,
+                    "category": template.category,
+                    "author": template.author,
+                    "created_at": template.created_at,
+                    "updated_at": datetime.utcnow(),
+                    "version": template.version + 1,
+                    "status": template.status,
+                    "usage_count": template.usage_count
+                }
+                
             elif operation == "remove":
                 # 删除指定名称的变量
                 original_length = len(current_variables)
+                # 使用传入的变量名进行删除
+                target_name = variable.name
                 current_variables = [
                     var for var in current_variables
-                    if var["name"] != variable.name
+                    if var["name"] != target_name
                 ]
-                if len(current_variables) < original_length:
-                    logger.info(f"删除变量: {variable.name}")
-                else:
-                    logger.warning(f"未找到要删除的变量: {variable.name}")
+                if len(current_variables) == original_length:
+                    raise ValueError(f"Variable {target_name} not found")
+                logger.info(f"删除变量: {target_name}")
+                
+                # 更新模板中的变量列表
+                new_variables = {
+                    "variables": current_variables
+                }
+                
+                # 使用 SQLAlchemy 更新
+                stmt = (
+                    update(Template)
+                    .where(Template.id == template_id)
+                    .values(
+                        variables=new_variables,
+                        version=template.version + 1,
+                        updated_at=datetime.utcnow()
+                    )
+                )
+                await self.db.execute(stmt)
+                await self.db.commit()
+                
+                # 返回更新后的数据
+                return {
+                    "id": template.id,
+                    "name": template.name,
+                    "description": template.description,
+                    "content": template.content,
+                    "prompt_template": template.prompt_template,
+                    "variables": current_variables,
+                    "category": template.category,
+                    "author": template.author,
+                    "created_at": template.created_at,
+                    "updated_at": datetime.utcnow(),
+                    "version": template.version + 1,
+                    "status": template.status,
+                    "usage_count": template.usage_count
+                }
+                
+            elif operation == "update":
+                if not old_name:
+                    raise ValueError("old_name is required for update operation")
+                
+                # 查找要更新的变量
+                var_index = next((i for i, var in enumerate(current_variables) 
+                                if var["name"] == old_name), -1)
+                
+                if var_index == -1:
+                    raise ValueError(f"Variable {old_name} not found")
+                
+                # 如果变量名要改变，检查新名称是否已存在
+                if variable.name != old_name and any(var["name"] == variable.name for var in current_variables):
+                    raise ValueError(f"Variable name {variable.name} already exists")
+                
+                # 更新变量，使用新的required值
+                current_variables[var_index] = {
+                    "name": variable.name,
+                    "description": variable.description,
+                    "required": variable.required if variable.required is not None else True
+                }
+                
+                # 如果变量名发生变化，更新模板内容中的引用
+                new_content = template.content
+                new_prompt_template = template.prompt_template
+                if variable.name != old_name:
+                    new_content = template.content.replace(
+                        f"{{{old_name}}}", 
+                        f"{{{variable.name}}}"
+                    )
+                    new_prompt_template = template.prompt_template.replace(
+                        f"{{{old_name}}}", 
+                        f"{{{variable.name}}}"
+                    )
+                
+                logger.info(f"更新变量 {old_name} 为: {current_variables[var_index]}")
+                
+                # 更新模板中的变量列表
+                new_variables = {
+                    "variables": current_variables
+                }
+                
+                # 使用 SQLAlchemy 更新
+                stmt = (
+                    update(Template)
+                    .where(Template.id == template_id)
+                    .values(
+                        variables=new_variables,
+                        content=new_content,
+                        prompt_template=new_prompt_template,
+                        version=template.version + 1,
+                        updated_at=datetime.utcnow()
+                    )
+                )
+                await self.db.execute(stmt)
+                await self.db.commit()
+                
+                # 返回更新后的数据
+                return {
+                    "id": template.id,
+                    "name": template.name,
+                    "description": template.description,
+                    "content": new_content,
+                    "prompt_template": new_prompt_template,
+                    "variables": current_variables,
+                    "category": template.category,
+                    "author": template.author,
+                    "created_at": template.created_at,
+                    "updated_at": datetime.utcnow(),
+                    "version": template.version + 1,
+                    "status": template.status,
+                    "usage_count": template.usage_count
+                }
             else:
-                raise ValueError("Invalid operation. Must be 'add' or 'remove'")
+                raise ValueError("Invalid operation. Must be 'add', 'remove', or 'update'")
             
-            # 更新模板中的变量列表
-            template.variables = {"variables": current_variables}
-            logger.info(f"更新后的变量列表: {template.variables}")
-            
-            # 更新模板内容和 prompt_template 中的变量引用
-            if operation == "remove":
-                # 如果是删除操作，从内容中移除对应的变量
-                template.content = re.sub(r'\{' + variable.name + r'\}(\s*\n?)', '', template.content)
-                template.prompt_template = re.sub(r'\{' + variable.name + r'\}(\s*\n?)', '', template.prompt_template)
-            
-            # 更新版本号和更新时间
-            template.version += 1
-            template.updated_at = datetime.utcnow()
-            
-            # 提交更改
-            await self.db.commit()
-            
-            # 重新获取模板以确保数据是最新的
-            result = await self.db.execute(query)
-            updated_template = result.scalar_one_or_none()
-            
-            if not updated_template:
-                raise ValueError("Failed to retrieve updated template")
-            
-            return {
-                "id": updated_template.id,
-                "name": updated_template.name,
-                "description": updated_template.description,
-                "content": updated_template.content,
-                "prompt_template": updated_template.prompt_template,
-                "variables": updated_template.variables["variables"],
-                "category": updated_template.category,
-                "author": updated_template.author,
-                "created_at": updated_template.created_at,
-                "updated_at": updated_template.updated_at,
-                "version": updated_template.version,
-                "status": updated_template.status,
-                "usage_count": updated_template.usage_count
-            }
         except Exception as e:
             await self.db.rollback()
             logger.error(f"更新模板变量时出错: {str(e)}")

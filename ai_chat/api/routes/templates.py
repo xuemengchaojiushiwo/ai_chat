@@ -62,6 +62,16 @@ async def update_template_variables(
     update: TemplateVariableUpdate,
     db: Session = Depends(get_db)
 ):
-    """更新模板变量，支持添加或删除单个变量"""
+    """更新模板变量，支持添加、删除或更新单个变量
+    
+    - operation: add - 添加新变量
+    - operation: remove - 删除现有变量
+    - operation: update - 更新变量名称和描述
+    """
     service = TemplateService(db)
-    return await service.update_template_variables(template_id, update.operation, update.variable) 
+    return await service.update_template_variables(
+        template_id, 
+        update.operation, 
+        update.variable,
+        update.old_name
+    ) 

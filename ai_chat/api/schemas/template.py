@@ -34,13 +34,15 @@ class TemplateUpdate(BaseModel):
 
 class TemplateVariableOperation(BaseModel):
     """单个变量的操作模型"""
-    operation: str = Field(..., description="操作类型：add 或 remove")
+    operation: str = Field(..., description="操作类型：add、remove 或 update")
     variable: TemplateVariable = Field(..., description="要操作的变量")
+    old_name: Optional[str] = Field(None, description="更新操作时的原变量名")
 
 class TemplateVariableUpdate(BaseModel):
     """更新模板变量的请求模型"""
-    operation: str = Field(..., description="操作类型：add 或 remove")
+    operation: str = Field(..., description="操作类型：add、remove 或 update")
     variable: TemplateVariable = Field(..., description="要操作的变量")
+    old_name: Optional[str] = Field(None, description="更新操作时的原变量名")
 
 class TemplateResponse(TemplateBase):
     id: int = Field(...)
