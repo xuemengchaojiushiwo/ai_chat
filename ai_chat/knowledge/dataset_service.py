@@ -110,33 +110,55 @@ class DatasetService:
             unique_filename = await self._get_unique_filename(filename, file_hash, version)
             file_path = os.path.join("uploads", unique_filename)
 
-            # 保存文件
+            # 确保uploads目录存在
+            os.makedirs("uploads", exist_ok=True)
+
+            # 保存文件并计算大小
+            file_size = 0
             with open(file_path, "wb") as f:
-                f.write(file.read())
+                while chunk := file.read(8192):  # 分块读取，每块8KB
+                    file_size += len(chunk)
+                    f.write(chunk)
+            
+            # 重置文件指针位置
             file.seek(0)
+            logger.info(f"文件大小: {file_size} 字节")
 
             # 创建文档记录
             document = DBDocument(
                 name=filename,
                 file_path=file_path,
                 file_hash=file_hash,
-                size=file.tell(),
+                size=file_size,  # 使用计算得到的文件大小
                 mime_type=mime_type,
                 version=version,
                 dataset_id=dataset.id,
-                original_name=filename
+                original_name=filename,
+                status="processing"  # 添加状态标记
             )
             self.db.add(document)
             await self.db.commit()
             await self.db.refresh(document)
+            logger.info(f"创建文档记录: id={document.id}, size={document.size}")
 
             # 处理文件并获取文本内容和位置信息
-            content, mime_type, text_blocks = process_file(file_path)
-            logger.info(f"Processed file content length: {len(content)} characters")
-            logger.info(f"Number of text blocks: {len(text_blocks)}")
+            try:
+                content, mime_type, text_blocks = process_file(file_path)
+                document.status = "processed"  # 更新状态为处理完成
+                document.content = content
+                logger.info(f"文档处理完成: {len(content)} 字符, {len(text_blocks)} 个文本块")
+            except Exception as e:
+                document.status = "error"
+                document.error = str(e)
+                logger.error(f"处理文档内容时出错: {str(e)}")
+                await self.db.commit()
+                raise
 
             if not content.strip():
-                raise ValueError("Extracted content is empty")
+                document.status = "error"
+                document.error = "提取的内容为空"
+                await self.db.commit()
+                raise ValueError("提取的内容为空")
 
             # 按页面组织文本块
             page_blocks = {}
