@@ -6,6 +6,7 @@ from typing import Optional, Tuple, List, Dict, Any
 import markdown
 import pdfplumber
 from docx import Document as DocxDocument  # 重命名以避免冲突
+import camelot
 
 from .text_splitter import TextBlock
 
@@ -25,7 +26,7 @@ class PDFProcessor:
             with pdfplumber.open(file_path) as pdf:
                 for page_num, page in enumerate(pdf.pages, 1):
                     # 1. 提取并处理表格
-                    tables = self._extract_tables(page, page_num)
+                    tables = self._extract_tables(page, page_num, file_path)
                     text_blocks.extend(tables)
                     
                     # 2. 提取文本元素
@@ -48,61 +49,115 @@ class PDFProcessor:
             
         return full_text.strip(), text_blocks
     
-    def _extract_tables(self, page, page_num) -> List[TextBlock]:
+    def _extract_tables(self, page, page_num, file_path: str) -> List[TextBlock]:
         """提取并处理表格"""
-        table_blocks = []
-        tables = page.extract_tables()
+        text_blocks = []
         
-        for table_num, table in enumerate(tables):
-            if not table:
-                continue
+        # 暂时禁用Camelot表格提取
+        # try:
+        #     # 使用多种表格提取方法
+        #     tables = []
+        #     try:
+        #         # 首先尝试使用lattice模式
+        #         lattice_tables = camelot.read_pdf(file_path, pages=str(page_num), flavor='lattice')
+        #         tables.extend(lattice_tables)
+        #         logger.info(f"使用lattice模式提取到 {len(lattice_tables)} 个表格")
+        #     except Exception as e:
+        #         logger.warning(f"lattice模式提取表格失败: {str(e)}")
                 
-            # 将表格转换为文本形式
-            table_text = self._table_to_text(table)
-            
-            # 尝试获取表格位置信息
-            try:
-                # 获取页面中的所有矩形
-                rects = page.rects
-                if rects and len(rects) > table_num:
-                    # 如果是字典，直接使用坐标值
-                    if isinstance(rects[table_num], dict):
-                        bbox = {
-                            'x0': rects[table_num].get('x0', 0),
-                            'y0': rects[table_num].get('top', 0),
-                            'x1': rects[table_num].get('x1', 0),
-                            'y1': rects[table_num].get('bottom', 0)
-                        }
-                    # 如果有bbox属性，使用bbox
-                    elif hasattr(rects[table_num], 'bbox'):
-                        bbox = {
-                            'x0': rects[table_num].bbox[0],
-                            'y0': rects[table_num].bbox[1],
-                            'x1': rects[table_num].bbox[2],
-                            'y1': rects[table_num].bbox[3]
-                        }
-                    else:
-                        bbox = {'x0': 0, 'y0': 0, 'x1': 0, 'y1': 0}
-                else:
-                    bbox = {'x0': 0, 'y0': 0, 'x1': 0, 'y1': 0}
-            except (AttributeError, IndexError):
-                bbox = {'x0': 0, 'y0': 0, 'x1': 0, 'y1': 0}
-            
-            table_block = TextBlock(
-                text=table_text,
-                page_number=page_num,
-                block_type='table',
-                position=bbox,
-                metadata={
-                    'rows': len(table),
-                    'cols': len(table[0]) if table else 0,
-                    'is_table': True,
-                    'bbox': bbox  # 添加bbox信息到元数据中
-                }
-            )
-            table_blocks.append(table_block)
-            
-        return table_blocks
+        #     try:
+        #         # 然后尝试使用stream模式
+        #         stream_tables = camelot.read_pdf(file_path, pages=str(page_num), flavor='stream')
+        #         tables.extend(stream_tables)
+        #         logger.info(f"使用stream模式提取到 {len(stream_tables)} 个表格")
+        #     except Exception as e:
+        #         logger.warning(f"stream模式提取表格失败: {str(e)}")
+                
+        #     for table in tables:
+        #         if table.df.empty:
+        #             continue
+                    
+        #         try:
+        #             # 将表格转换为文本形式
+        #             table_data = table.df.values.tolist()
+        #             if not table_data:
+        #                 continue
+                        
+        #             # 清理表格数据
+        #             cleaned_data = []
+        #             for row in table_data:
+        #                 cleaned_row = []
+        #                 for cell in row:
+        #                     # 清理单元格数据
+        #                     if cell is None:
+        #                         cell = ''
+        #                     cell = str(cell).strip()
+        #                     # 移除多余的空白字符
+        #                     cell = ' '.join(cell.split())
+        #                     cleaned_row.append(cell)
+        #                 if any(cell for cell in cleaned_row):  # 只保留非空行
+        #                     cleaned_data.append(cleaned_row)
+                    
+        #             if not cleaned_data:  # 如果清理后没有数据，跳过
+        #                 continue
+                        
+        #             table_text = self._table_to_text(cleaned_data)
+                    
+        #             # 获取表格位置信息
+        #             bbox = {
+        #                 'x0': table.bbox[0],
+        #                 'y0': table.bbox[1],
+        #                 'x1': table.bbox[2],
+        #                 'y1': table.bbox[3]
+        #             }
+                    
+        #             # 确保正确获取行数和列数
+        #             rows = len(cleaned_data)
+        #             cols = len(cleaned_data[0]) if cleaned_data else 0
+                    
+        #             # 检查表格是否包含数字数据
+        #             has_numbers = any(
+        #                 any(cell.replace('.', '').replace('-', '').replace('%', '').isdigit()
+        #                     for cell in row)
+        #                 for row in cleaned_data
+        #             )
+                    
+        #             # 检查表格是否包含日期数据
+        #             has_dates = any(
+        #                 any(re.search(r'\d{1,4}[-/年]\d{1,2}[-/月]\d{1,2}|'
+        #                             r'\d{4}[-/]\d{1,2}|'
+        #                             r'\d{1,2}[-/]\d{4}', cell)
+        #                     for cell in row)
+        #                 for row in cleaned_data
+        #             )
+                    
+        #             table_block = TextBlock(
+        #                 text=table_text,
+        #                 page_number=table.page,
+        #                 block_type='table',
+        #                 position=bbox,
+        #                 metadata={
+        #                     'rows': rows,
+        #                     'cols': cols,
+        #                     'is_table': True,
+        #                     'has_numbers': has_numbers,
+        #                     'has_dates': has_dates,
+        #                     'table_data': cleaned_data,
+        #                     'bbox': bbox
+        #                 }
+        #             )
+        #             text_blocks.append(table_block)
+        #             logger.info(f"成功提取表格：{rows}行 x {cols}列")
+        #             logger.info(f"表格预览：\n{table_text[:200]}...")
+                    
+        #         except Exception as e:
+        #             logger.warning(f"处理表格时出错: {str(e)}")
+        #             continue
+                    
+        # except Exception as e:
+        #     logger.warning(f"使用Camelot提取表格时出错: {str(e)}")
+                    
+        return text_blocks
     
     def _process_text_elements(self, words, page_num, page) -> List[TextBlock]:
         """处理文本元素"""
